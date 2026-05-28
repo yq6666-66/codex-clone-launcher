@@ -1,0 +1,77 @@
+[package]
+name = "codex-clone-launcher"
+version = "0.24.7"
+description = "Codex Clone Launcher"
+authors = ["jlcodes"]
+license = "CC-BY-NC-SA-4.0"
+edition = "2021"
+
+[lib]
+name = "codex_clone_launcher_lib"
+crate-type = ["staticlib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+swift-rs = { version = "1.0.7", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml_edit = "0.20"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = "0.4"
+dirs = "5.0"
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate", "zstd", "stream", "socks"] }
+# 为 tauri-plugin-updater 所依赖的 reqwest 0.13 合并 socks 特性，
+# 使 updater 链路在全局代理配置为 socks5:// 时可正常发起请求。
+reqwest_updater_socks = { package = "reqwest", version = "0.13", default-features = false, features = ["socks"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+tracing-appender = "0.2"
+tracing-log = "0.2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
+minisign-verify = "0.2"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
+rustls = "0.23"
+rcgen = "0.13"
+thiserror = "2"
+anyhow = "1.0"
+sha2 = "0.10"
+rsa = "0.9"
+serde_urlencoded = "0.7"
+url = "2.5"
+regex = "1"
+rand = "0.8"
+futures = "0.3"
+sysinfo = "0.33"
+libc = "0.2"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+md5 = "0.7"
+tiny_http = "0.12"
+urlencoding = "2.1"
+lazy_static = "1.5"
+trash = "5"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6"
+objc2 = "0.6.3"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2.10.0"

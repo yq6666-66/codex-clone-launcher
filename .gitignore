@@ -1,0 +1,61 @@
+# Logs
+logs
+*.log
+*.dmg
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.gemini
+# Editor directories and files
+.vscode/*
+.planning
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local AI instructions
+AGENTS.md
+
+locale-check-report.md
+
+docs/platform-integration-guide.md
+docs/plugin-architecture-design.md
+
+# Runtime caches
+src-tauri/arms_cache/
+arms.biz.trace.*
+codex-clone-launcher.log
+auth.json
+config.toml
+state_5.sqlite
+state_5.sqlite*
+session_index.jsonl
+sessions/
+memories/
+plugins/
+clone-memory-manifest.json
+clone-history-sync-summary.json
+clone-history-sync-backups/
+
+# Swift native menu build artifacts
+src-tauri/native/macos-native-menu/.build/
+.tmp/
+
+# Rust
+target/
+**/*.rs.bk
+docs/plugin-architecture-proposal.md
+.aitasks
+.qoder/

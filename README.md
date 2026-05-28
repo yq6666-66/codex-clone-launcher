@@ -46,4 +46,4 @@ npm run tauri build
 
 ## License
 
-CC-BY-NC-SA-4.0
+MIT

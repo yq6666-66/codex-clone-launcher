@@ -2,6 +2,7 @@
   "name": "codex-clone-launcher",
   "private": false,
   "version": "0.24.7",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

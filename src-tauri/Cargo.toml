@@ -3,7 +3,7 @@ name = "codex-clone-launcher"
 version = "0.24.7"
 description = "Codex Clone Launcher"
 authors = ["jlcodes"]
-license = "CC-BY-NC-SA-4.0"
+license = "MIT"
 edition = "2021"
 
 [lib]

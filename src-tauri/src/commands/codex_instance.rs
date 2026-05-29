@@ -262,12 +262,10 @@ pub async fn codex_create_clone_and_launch(
         })?;
 
     if inherit_local_data {
-        modules::codex_instance::inherit_local_memory_artifacts(Path::new(
+        modules::codex_sync_package::apply_fresh_sync_package_to_home(Path::new(
             &instance.user_data_dir,
         ))?;
     }
-
-    write_clone_model_to_config(Path::new(&instance.user_data_dir), input.model.as_deref())?;
     if let Some(ref account_id) = instance.bind_account_id {
         modules::codex_instance::inject_account_to_profile(
             Path::new(&instance.user_data_dir),
@@ -275,6 +273,7 @@ pub async fn codex_create_clone_and_launch(
         )
         .await?;
     }
+    write_clone_model_to_config(Path::new(&instance.user_data_dir), input.model.as_deref())?;
     if inherit_local_data {
         let context = modules::codex_history_sync::CodexHistoryContext {
             bound_account_id: instance.bind_account_id.clone(),
@@ -381,6 +380,13 @@ pub async fn codex_history_sync(
     dry_run: bool,
 ) -> Result<modules::codex_history_sync::CodexHistorySyncResult, String> {
     let (codex_home, bind_account_id) = codex_home_and_bind_for_instance(&instance_id)?;
+    if !dry_run {
+        modules::codex_sync_package::apply_fresh_sync_package_to_home(Path::new(&codex_home))?;
+        if let Some(ref account_id) = bind_account_id {
+            modules::codex_instance::inject_account_to_profile(Path::new(&codex_home), account_id)
+                .await?;
+        }
+    }
     let context = modules::codex_history_sync::CodexHistoryContext {
         bound_account_id: bind_account_id,
     };
@@ -397,8 +403,11 @@ pub async fn codex_history_repair(
 ) -> Result<modules::codex_history_sync::CodexHistorySyncResult, String> {
     let (codex_home, bind_account_id) = codex_home_and_bind_for_instance(&instance_id)?;
     if let Some(ref account_id) = bind_account_id {
+        modules::codex_sync_package::apply_fresh_sync_package_to_home(Path::new(&codex_home))?;
         modules::codex_instance::inject_account_to_profile(Path::new(&codex_home), account_id)
             .await?;
+    } else {
+        modules::codex_sync_package::apply_fresh_sync_package_to_home(Path::new(&codex_home))?;
     }
     let context = modules::codex_history_sync::CodexHistoryContext {
         bound_account_id: bind_account_id,
@@ -414,6 +423,26 @@ pub async fn codex_history_repair(
 }
 
 #[tauri::command]
+pub async fn codex_sync_package_status(
+) -> Result<modules::codex_sync_package::CodexSyncPackageStatus, String> {
+    modules::codex_sync_package::status()
+}
+
+#[tauri::command]
+pub async fn codex_extract_sync_package(
+) -> Result<modules::codex_sync_package::CodexSyncPackageStatus, String> {
+    modules::codex_sync_package::extract_sync_package()
+}
+
+#[tauri::command]
+pub async fn codex_apply_sync_package_to_instance(
+    instance_id: String,
+) -> Result<modules::codex_sync_package::CodexSyncPackageApplyResult, String> {
+    let codex_home = codex_home_for_instance(&instance_id)?;
+    modules::codex_sync_package::apply_fresh_sync_package_to_home(Path::new(&codex_home))
+}
+
+#[tauri::command]
 pub async fn codex_start_instance(instance_id: String) -> Result<CodexInstanceProfileView, String> {
     if instance_id == DEFAULT_INSTANCE_ID {
         return Err("default Codex instance is not managed by this launcher".to_string());
@@ -425,8 +454,6 @@ pub async fn codex_start_instance(instance_id: String) -> Result<CodexInstancePr
         .into_iter()
         .find(|item| item.id == instance_id)
         .ok_or_else(|| "instance not found".to_string())?;
-
-    modules::codex_instance::ensure_instance_shared_skills(Path::new(&instance.user_data_dir))?;
 
     if let Some(pid) =
         modules::process::resolve_codex_pid(instance.last_pid, Some(&instance.user_data_dir))

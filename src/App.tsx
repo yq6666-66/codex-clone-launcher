@@ -84,6 +84,21 @@ type CodexHistorySyncResult = {
   warnings: string[];
 };
 
+type CodexSyncPackageStatus = {
+  exists: boolean;
+  packagePath: string;
+  manifestPath: string;
+  source?: string | null;
+  createdAt?: number | null;
+  sourceModifiedAt?: number | null;
+  stale: boolean;
+  fileCount: number;
+  directoryCount: number;
+  copiedBytes: number;
+  skipped: string[];
+  warnings: string[];
+};
+
 type GeneralConfig = {
   codex_app_path: string;
 };
@@ -156,6 +171,13 @@ const text = {
   history: '记忆',
   historyCheck: '校验',
   historyRepair: '同步/修复',
+  syncPackageTitle: '本体同步包',
+  syncPackageMissing: '还未提取本体同步包，点击提取后会生成可复制到分身的安全白名单内容。',
+  syncPackageRefresh: '提取/刷新本体',
+  syncPackageReady: '同步包就绪',
+  syncPackageStale: '本体已有更新',
+  syncPackageStaleHint: '同步/修复会先自动刷新',
+  syncPackageExtracted: '本体同步包已刷新',
   historyRefresh: '刷新状态',
   running: '运行中',
   stopped: '未运行',
@@ -187,7 +209,7 @@ function defaultCloneValues(name: string): CloneFormValues {
     apiKey: '',
     model: DEFAULT_MODEL,
     workingDir: '',
-    inheritLocalData: true,
+    inheritLocalData: false,
     launchAfterCreate: true,
   };
 }
@@ -209,6 +231,18 @@ function formatShortPath(path?: string | null): string {
   if (!path) return '无备份';
   const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts.slice(-2).join('\\') || path;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unit]}`;
 }
 
 function historySummary(status?: CodexHistoryStatus | null): string {
@@ -241,6 +275,7 @@ export default function App() {
   const [pendingLoginId, setPendingLoginId] = useState('');
   const [codexInstances, setCodexInstances] = useState<InstanceProfile[]>([]);
   const [historyByInstance, setHistoryByInstance] = useState<Record<string, CodexHistoryStatus>>({});
+  const [syncPackage, setSyncPackage] = useState<CodexSyncPackageStatus | null>(null);
   const [codexAppPath, setCodexAppPath] = useState('');
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState<Message | null>(null);
@@ -280,13 +315,23 @@ export default function App() {
     });
   }
 
+  async function refreshSyncPackage() {
+    const status = await invoke<CodexSyncPackageStatus>('codex_sync_package_status');
+    setSyncPackage(status);
+  }
+
   async function refreshConfig() {
     const config = await invoke<GeneralConfig>('get_general_config');
     setCodexAppPath(config.codex_app_path || '');
   }
 
   async function refreshAll() {
-    await Promise.allSettled([refreshCodexAccounts(), refreshCodexInstances(), refreshConfig()]);
+    await Promise.allSettled([
+      refreshCodexAccounts(),
+      refreshCodexInstances(),
+      refreshSyncPackage(),
+      refreshConfig(),
+    ]);
   }
 
   useEffect(() => {
@@ -417,14 +462,26 @@ export default function App() {
     });
   }
 
+  async function extractCodexSyncPackage() {
+    await withBusy('codex-sync-package-extract', async () => {
+      const status = await invoke<CodexSyncPackageStatus>('codex_extract_sync_package');
+      setSyncPackage(status);
+      showMessage(
+        'success',
+        `${text.syncPackageExtracted}: ${status.fileCount} 文件 / ${status.directoryCount} 目录 / ${formatBytes(status.copiedBytes)}`,
+      );
+    });
+  }
+
   async function repairCodexHistory(instanceId: string) {
     await withBusy(`codex-history-repair-${instanceId}`, async () => {
       const result = await invoke<CodexHistorySyncResult>('codex_history_repair', { instanceId });
       const status = await invoke<CodexHistoryStatus>('codex_history_status', { instanceId });
+      await refreshSyncPackage();
       setHistoryByInstance((current) => ({ ...current, [instanceId]: status }));
       showMessage(
         result.ok ? 'success' : 'error',
-        `已同步 ${result.syncedThreads} 条源线程，对齐 ${result.updatedThreads} 行、${result.updatedSessionFiles} 个 session，mismatch ${result.mismatchCountAfter}`,
+        `已应用本体同步包，聊天 ${result.syncedThreads} 条源线程，对齐 ${result.updatedThreads} 行、${result.updatedSessionFiles} 个 session，mismatch ${result.mismatchCountAfter}`,
       );
     });
   }
@@ -618,21 +675,29 @@ export default function App() {
       ) : null}
 
       {page === 'codexList' ? (
-        <InstanceList
-          title={text.codexList}
-          subtitle={text.codexSubtitle}
-          emptyText={text.noCodex}
-          instances={codexCloneList}
-          onRefresh={refreshCodexInstances}
-          onStart={startCodexInstance}
-          onStop={stopCodexInstance}
-          onDelete={deleteCodexInstance}
-          busy={busy}
-          historyByInstance={historyByInstance}
-          onHistoryRefresh={refreshCodexHistory}
-          onHistoryVerify={verifyCodexHistory}
-          onHistoryRepair={repairCodexHistory}
-        />
+        <section className="list-page">
+          <SyncPackagePanel
+            status={syncPackage}
+            busy={busy}
+            onExtract={extractCodexSyncPackage}
+            onRefresh={refreshSyncPackage}
+          />
+          <InstanceList
+            title={text.codexList}
+            subtitle={text.codexSubtitle}
+            emptyText={text.noCodex}
+            instances={codexCloneList}
+            onRefresh={refreshCodexInstances}
+            onStart={startCodexInstance}
+            onStop={stopCodexInstance}
+            onDelete={deleteCodexInstance}
+            busy={busy}
+            historyByInstance={historyByInstance}
+            onHistoryRefresh={refreshCodexHistory}
+            onHistoryVerify={verifyCodexHistory}
+            onHistoryRepair={repairCodexHistory}
+          />
+        </section>
       ) : null}
 
       {page === 'settings' ? (
@@ -676,7 +741,7 @@ function InstanceList(props: {
   onHistoryRepair?: (id: string) => Promise<void>;
 }) {
   return (
-    <section className="list-page">
+    <div className="instance-list-section">
       <div className="section-header">
         <div>
           <h2>{props.title}</h2>
@@ -688,7 +753,50 @@ function InstanceList(props: {
         </button>
       </div>
       <InstanceTable {...props} />
-    </section>
+    </div>
+  );
+}
+
+function SyncPackagePanel(props: {
+  status: CodexSyncPackageStatus | null;
+  busy: string;
+  onExtract: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+}) {
+  const status = props.status;
+  const isReady = Boolean(status?.exists);
+  const isStale = Boolean(status?.stale);
+  return (
+    <div className={isReady ? `sync-package-panel ready${isStale ? ' stale' : ''}` : 'sync-package-panel'}>
+      <div>
+        <div className="panel-title">
+          <strong>{text.syncPackageTitle}</strong>
+          <span>{isReady ? (isStale ? text.syncPackageStale : text.syncPackageReady) : text.syncPackageMissing}</span>
+        </div>
+        <code>{status?.packagePath || 'C:\\Users\\admin\\.codex_clone_launcher\\sync-package\\codex-home'}</code>
+        {isReady ? (
+          <div className="package-stats">
+            <span>{formatTime(status?.createdAt)}</span>
+            {status?.sourceModifiedAt ? <span>本体 {formatTime(status.sourceModifiedAt)}</span> : null}
+            <span>{status?.fileCount ?? 0} 文件</span>
+            <span>{status?.directoryCount ?? 0} 目录</span>
+            <span>{formatBytes(status?.copiedBytes ?? 0)}</span>
+            {isStale ? <span className="warning">{text.syncPackageStaleHint}</span> : null}
+            {status?.warnings?.length ? <span className="warning">{status.warnings[0]}</span> : null}
+          </div>
+        ) : null}
+      </div>
+      <div className="package-actions">
+        <button disabled={Boolean(props.busy)} onClick={() => void props.onRefresh()} type="button">
+          <RefreshCw size={16} />
+          {text.historyRefresh}
+        </button>
+        <button disabled={Boolean(props.busy)} onClick={() => void props.onExtract()} type="button">
+          {props.busy === 'codex-sync-package-extract' ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+          {text.syncPackageRefresh}
+        </button>
+      </div>
+    </div>
   );
 }
 

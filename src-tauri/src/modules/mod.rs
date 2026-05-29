@@ -7,6 +7,7 @@ pub mod codex_instance;
 pub mod codex_oauth;
 pub mod codex_official_app_server;
 pub mod codex_protocol;
+pub mod codex_sync_package;
 pub mod config;
 pub mod instance;
 pub mod instance_store;

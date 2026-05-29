@@ -131,6 +131,32 @@ fn normalize_custom_path(raw: Option<&str>) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
+fn is_protected_or_cli_codex_path(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    normalized.contains("\\program files\\windowsapps\\")
+        || normalized.ends_with("\\resources\\codex.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn save_detected_codex_launch_path(path: &Path) {
+    let normalized = path.to_string_lossy().to_string();
+    let mut config = config::get_user_config();
+    if config.codex_app_path.trim() == normalized {
+        return;
+    }
+    config.codex_app_path = normalized;
+    if let Err(error) = config::save_user_config(&config) {
+        crate::modules::logger::log_warn(&format!(
+            "[Codex Start] failed to save detected launch path: {}",
+            error
+        ));
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn normalize_windows_candidate_path(raw: &str) -> Option<PathBuf> {
     let mut value = raw.trim().trim_matches('"').trim_matches('\'').to_string();
     if let Some(index) = value.to_ascii_lowercase().find(".exe") {
@@ -211,7 +237,7 @@ fn detect_codex_exec_path_by_windowsapps_scan() -> Option<PathBuf> {
             let Some(version) = parse_codex_store_version_from_dir_name(&dir_name) else {
                 continue;
             };
-            let candidate = entry.path().join("app").join("resources").join("codex.exe");
+            let candidate = entry.path().join("app").join("Codex.exe");
             if !candidate.is_file() {
                 continue;
             }
@@ -234,7 +260,7 @@ $pkg = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue |
   Sort-Object Version -Descending |
   Select-Object -First 1
 if ($pkg -and $pkg.InstallLocation) {
-  $candidate = Join-Path $pkg.InstallLocation 'app\resources\codex.exe'
+  $candidate = Join-Path $pkg.InstallLocation 'app\Codex.exe'
   if (Test-Path -LiteralPath $candidate) { Write-Output $candidate }
 }
 "#;
@@ -249,7 +275,7 @@ if ($pkg -and $pkg.InstallLocation) {
 
 #[cfg(target_os = "windows")]
 fn codex_program_data_exe_path() -> PathBuf {
-    PathBuf::from("C:\\ProgramData\\Codex\\CodexApp\\resources\\codex.exe")
+    PathBuf::from("C:\\ProgramData\\Codex\\CodexApp\\Codex.exe")
 }
 
 #[cfg(target_os = "windows")]
@@ -279,16 +305,46 @@ fn detect_codex_exec_path() -> Option<PathBuf> {
     None
 }
 
+#[allow(dead_code)]
 fn resolve_codex_launch_path() -> Result<PathBuf, String> {
     if let Some(custom) = normalize_custom_path(Some(&config::get_user_config().codex_app_path)) {
+        #[cfg(target_os = "windows")]
+        if is_protected_or_cli_codex_path(&custom) {
+            return detect_codex_exec_path().ok_or_else(|| {
+                "Codex desktop executable was not found. Expected C:\\ProgramData\\Codex\\CodexApp\\Codex.exe"
+                    .to_string()
+            });
+        }
         return Ok(custom);
     }
     detect_codex_exec_path()
         .ok_or_else(|| "未找到 Codex 可执行文件，请在设置中配置 Codex 启动路径".to_string())
 }
 
+fn resolve_codex_desktop_launch_path() -> Result<PathBuf, String> {
+    let detected = detect_codex_exec_path().ok_or_else(|| {
+        "Codex executable was not found. Configure the Codex launch path in settings.".to_string()
+    })?;
+
+    if let Some(custom) = normalize_custom_path(Some(&config::get_user_config().codex_app_path)) {
+        #[cfg(target_os = "windows")]
+        {
+            if is_protected_or_cli_codex_path(&custom) {
+                save_detected_codex_launch_path(&detected);
+                return Ok(detected);
+            }
+        }
+        return Ok(custom);
+    }
+
+    #[cfg(target_os = "windows")]
+    save_detected_codex_launch_path(&detected);
+
+    Ok(detected)
+}
+
 pub fn ensure_codex_launch_path_configured() -> Result<(), String> {
-    resolve_codex_launch_path().map(|_| ())
+    resolve_codex_desktop_launch_path().map(|_| ())
 }
 
 pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
@@ -385,17 +441,60 @@ pub fn is_pid_running(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "windows")]
+fn first_regex_capture(text: &str, pattern: &str) -> Option<String> {
+    let captures = regex::Regex::new(pattern).ok()?.captures(text)?;
+    captures
+        .iter()
+        .skip(1)
+        .flatten()
+        .map(|value| value.as_str().trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "windows")]
+fn extract_windows_codex_target_from_command_line(command_line: &str) -> Option<String> {
+    [
+        r#"(?i)(?:^|\s)"CODEX_HOME=([^"]+)""#,
+        r#"(?i)(?:^|\s)CODEX_HOME="([^"]+)""#,
+        r#"(?i)(?:^|\s)CODEX_HOME=([^\s"]+)"#,
+        r#"(?i)(?:^|\s)"CODEX_ELECTRON_USER_DATA_PATH=([^"]+)""#,
+        r#"(?i)(?:^|\s)CODEX_ELECTRON_USER_DATA_PATH="([^"]+)""#,
+        r#"(?i)(?:^|\s)CODEX_ELECTRON_USER_DATA_PATH=([^\s"]+)"#,
+        r#"(?i)(?:^|\s)"ELECTRON_USER_DATA_DIR=([^"]+)""#,
+        r#"(?i)(?:^|\s)ELECTRON_USER_DATA_DIR="([^"]+)""#,
+        r#"(?i)(?:^|\s)ELECTRON_USER_DATA_DIR=([^\s"]+)"#,
+        r#"(?i)(?:^|\s)"--user-data-dir=([^"]+)""#,
+        r#"(?i)(?:^|\s)--user-data-dir="([^"]+)""#,
+        r#"(?i)(?:^|\s)--user-data-dir=([^\s"]+)"#,
+        r#"(?i)(?:^|\s)--user-data-dir\s+"([^"]+)""#,
+        r#"(?i)(?:^|\s)--user-data-dir\s+([^\s"]+)"#,
+    ]
+    .iter()
+    .find_map(|pattern| first_regex_capture(command_line, pattern))
+}
+
+#[cfg(target_os = "windows")]
 fn parse_windows_process_entries(output: &str) -> Vec<(u32, Option<String>)> {
     output
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(2, '|');
+            let mut parts = line.splitn(3, '|');
             let pid = parts.next()?.trim().parse::<u32>().ok()?;
-            let home = parts
+            let parent_pid = parts
                 .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            Some((pid, home.map(ToOwned::to_owned)))
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .unwrap_or(0);
+            let command_line = parts.next().unwrap_or_default();
+            let target = extract_windows_codex_target_from_command_line(command_line);
+            let owner_pid = if target.is_some()
+                && parent_pid != 0
+                && command_line.to_ascii_lowercase().contains("--type=")
+            {
+                parent_pid
+            } else {
+                pid
+            };
+            Some((owner_pid, target))
         })
         .collect()
 }
@@ -404,18 +503,17 @@ fn parse_windows_process_entries(output: &str) -> Vec<(u32, Option<String>)> {
 pub fn collect_codex_process_entries() -> Vec<(u32, Option<String>)> {
     let script = r#"
 Get-CimInstance Win32_Process |
-  Where-Object {
-    $_.Name -match '^(Codex|codex)\.exe$' -or
-    $_.CommandLine -match 'CODEX_HOME' -or
-    $_.CommandLine -match 'codex-app-data'
-  } |
-  ForEach-Object {
-    $cmd = [string]$_.CommandLine
-    $home = ''
-    if ($cmd -match 'CODEX_HOME=([^\s"]+)') { $home = $matches[1] }
-    elseif ($cmd -match 'CODEX_HOME\s*=\s*"([^"]+)"') { $home = $matches[1] }
-    "$($_.ProcessId)|$home"
-  }
+      Where-Object {
+        $_.Name -match '^(Codex|codex)\.exe$' -or
+        $_.CommandLine -match 'CODEX_HOME' -or
+        $_.CommandLine -match 'CODEX_ELECTRON_USER_DATA_PATH' -or
+        $_.CommandLine -match 'ELECTRON_USER_DATA_DIR' -or
+        $_.CommandLine -match 'codex-app-data' -or
+        $_.CommandLine -match '--user-data-dir'
+      } |
+      ForEach-Object {
+        "$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)"
+      }
 "#;
     let Ok(output) = powershell_output(script) else {
         return Vec::new();
@@ -492,6 +590,62 @@ pub fn resolve_codex_pid(last_pid: Option<u32>, codex_home: Option<&str>) -> Opt
     resolve_codex_pid_from_entries(last_pid, codex_home, &entries)
 }
 
+#[cfg(target_os = "windows")]
+fn codex_main_window_handle(pid: u32) -> Option<u64> {
+    let script = format!(
+        r#"
+$process = Get-Process -Id {} -ErrorAction SilentlyContinue
+if ($process -and $process.MainWindowHandle -and $process.MainWindowHandle -ne 0) {{
+  [UInt64]$process.MainWindowHandle
+}}
+"#,
+        pid
+    );
+    let output = powershell_output(&script).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.trim().parse::<u64>().ok())
+        .filter(|handle| *handle != 0)
+}
+
+#[cfg(target_os = "windows")]
+pub fn focus_process_main_window(pid: u32) -> bool {
+    let script = format!(
+        r#"
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Win32WindowFocus {{
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}}
+"@
+$process = Get-Process -Id {} -ErrorAction SilentlyContinue
+if (-not $process -or -not $process.MainWindowHandle -or $process.MainWindowHandle -eq 0) {{
+  exit 2
+}}
+$handle = [IntPtr]$process.MainWindowHandle
+[Win32WindowFocus]::ShowWindow($handle, 9) | Out-Null
+if ([Win32WindowFocus]::SetForegroundWindow($handle)) {{
+  exit 0
+}}
+exit 1
+"#,
+        pid
+    );
+    powershell_output(&script)
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn focus_process_main_window(_pid: u32) -> bool {
+    false
+}
+
 pub fn close_pid(pid: u32, timeout_secs: u64) -> Result<(), String> {
     if !is_pid_running(pid) {
         return Ok(());
@@ -538,7 +692,7 @@ fn codex_extra_args_have_user_data_dir(extra_args: &[String]) -> bool {
 }
 
 pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<u32, String> {
-    let launch_path = resolve_codex_launch_path()?;
+    let launch_path = resolve_codex_desktop_launch_path()?;
     let codex_home = codex_home.trim();
     if codex_home.is_empty() {
         return Err("CODEX_HOME 不能为空".to_string());
@@ -556,6 +710,8 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        command.env("CODEX_ELECTRON_USER_DATA_PATH", &app_user_data_dir);
+        command.env("ELECTRON_USER_DATA_DIR", &app_user_data_dir);
         if !codex_extra_args_have_user_data_dir(extra_args) {
             command.arg(format!(
                 "--user-data-dir={}",
@@ -574,14 +730,51 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
         .map_err(|error| format!("启动 Codex 失败: {}", error))?;
     let pid = child.id();
     crate::modules::logger::log_info(&format!(
-        "[Codex Start] launch_path={} codex_home={} pid={}",
+        "[Codex Start] launch_path={} codex_home={} app_user_data_dir={} pid={}",
         launch_path.to_string_lossy(),
         summarize_text_for_process_log(codex_home, 96),
+        {
+            #[cfg(target_os = "windows")]
+            {
+                summarize_text_for_process_log(&app_user_data_dir.to_string_lossy(), 120)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                "-".to_string()
+            }
+        },
         pid
     ));
 
-    thread::sleep(Duration::from_millis(700));
-    Ok(resolve_codex_pid(None, Some(codex_home)).unwrap_or(pid))
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Some(resolved_pid) = resolve_codex_pid(None, Some(codex_home)) {
+            #[cfg(target_os = "windows")]
+            {
+                let window_deadline = Instant::now() + Duration::from_secs(30);
+                while Instant::now() < window_deadline {
+                    if codex_main_window_handle(resolved_pid).is_some() {
+                        let _ = focus_process_main_window(resolved_pid);
+                        return Ok(resolved_pid);
+                    }
+                    thread::sleep(Duration::from_millis(250));
+                }
+                return Err(format!(
+                    "Codex clone process is running but no visible window appeared for CODEX_HOME={}. PID={}.",
+                    summarize_text_for_process_log(codex_home, 120),
+                    resolved_pid
+                ));
+            }
+            #[cfg(not(target_os = "windows"))]
+            return Ok(resolved_pid);
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+
+    Err(format!(
+        "Codex process was spawned but no managed clone window was detected for CODEX_HOME={}. Check that the launch path points to the desktop Codex.exe, not resources\\codex.exe or WindowsApps.",
+        summarize_text_for_process_log(codex_home, 120)
+    ))
 }
 
 #[cfg(test)]
@@ -604,6 +797,38 @@ mod tests {
         let newer =
             parse_codex_store_version_from_dir_name("OpenAI.Codex_1.2.10.0_x64__abc").unwrap();
         assert!(compare_windows_store_version(&newer, &older).is_gt());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_process_parser_extracts_user_data_dir_and_parent_owner() {
+        let output = r#"100|0|"C:\ProgramData\Codex\CodexApp\Codex.exe" --user-data-dir=C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc
+101|100|"C:\ProgramData\Codex\CodexApp\Codex.exe" --type=renderer --user-data-dir="C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc"
+102|0|"C:\ProgramData\Codex\CodexApp\Codex.exe" "--user-data-dir=C:\Users\admin\AppData\Roaming\Codex Clone"
+"#;
+        assert_eq!(
+            parse_windows_process_entries(output),
+            vec![
+                (
+                    100,
+                    Some(
+                        r#"C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc"#
+                            .to_string()
+                    )
+                ),
+                (
+                    100,
+                    Some(
+                        r#"C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc"#
+                            .to_string()
+                    )
+                ),
+                (
+                    102,
+                    Some(r#"C:\Users\admin\AppData\Roaming\Codex Clone"#.to_string())
+                ),
+            ]
+        );
     }
 
     #[test]

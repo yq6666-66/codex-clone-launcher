@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Utc};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, DatabaseName, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use toml_edit::Document;
@@ -23,15 +23,7 @@ const LOCK_FILE: &str = ".history-sync.lock";
 const LOCK_TIMEOUT: Duration = Duration::from_secs(20);
 const BACKUP_KEEP_RECENT: usize = 10;
 const BACKUP_KEEP_DAYS: i64 = 30;
-const SYNC_MEMORY_DIRECTORIES: &[&str] = &[
-    "sessions",
-    "archived_sessions",
-    "mcp-servers",
-    "plugins",
-    "memories",
-    "sqlite",
-    "ambient-suggestions",
-];
+const SYNC_MEMORY_DIRECTORIES: &[&str] = &["sessions", "archived_sessions"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +131,15 @@ struct AuthStatus {
     warning: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct DbStatusMetrics {
+    thread_count: i64,
+    provider_counts: Vec<CodexHistoryCount>,
+    model_counts: Vec<CodexHistoryCount>,
+    mismatch_count: i64,
+    missing_session_files: i64,
+}
+
 #[derive(Debug)]
 struct ProfileLock {
     path: PathBuf,
@@ -204,30 +205,21 @@ pub fn status_with_context(
     let mut missing_session_files = 0;
 
     if db_path.exists() {
-        let conn = open_readonly(&db_path)?;
-        let columns = thread_columns(&conn)?;
-        if !table_exists(&conn, "threads")? {
-            add_check(
-                &mut checks,
-                "threads_table",
-                false,
-                "missing threads table".to_string(),
-                true,
-            );
-        } else {
-            thread_count = query_i64(&conn, "SELECT COUNT(*) FROM threads", [])?;
-            provider_counts = query_counts(
-                &conn,
-                "SELECT COALESCE(model_provider, ''), COUNT(*) FROM threads GROUP BY model_provider ORDER BY COUNT(*) DESC, model_provider ASC",
-            )?;
-            if columns.iter().any(|column| column == "model") {
-                model_counts = query_counts(
-                    &conn,
-                    "SELECT COALESCE(model, ''), COUNT(*) FROM threads GROUP BY model ORDER BY COUNT(*) DESC, model ASC",
-                )?;
+        match collect_db_status_metrics(codex_home, &db_path, &target, &mut checks) {
+            Ok(metrics) => {
+                thread_count = metrics.thread_count;
+                provider_counts = metrics.provider_counts;
+                model_counts = metrics.model_counts;
+                mismatch_count = metrics.mismatch_count;
+                missing_session_files = metrics.missing_session_files;
             }
-            mismatch_count = count_mismatches(&conn, &columns, &target)?;
-            missing_session_files = count_missing_session_files(codex_home, &conn, &columns)?;
+            Err(error) => {
+                warnings.push(format!(
+                    "SQLite history database is unreadable; use sync/repair to rebuild it from the local Codex package: {}",
+                    error
+                ));
+                add_check(&mut checks, "database_integrity", false, error, true);
+            }
         }
     }
 
@@ -248,6 +240,34 @@ pub fn status_with_context(
     }
     if let Some(warning) = auth_status.warning.clone() {
         warnings.push(warning);
+    }
+    if db_path.exists() {
+        match sync_source_thread_delta(codex_home, &db_path) {
+            Ok(Some((missing_count, source_count, source_path))) => {
+                let synced = missing_count == 0;
+                add_check(
+                    &mut checks,
+                    "sync_package_threads",
+                    synced,
+                    format!(
+                        "missing_from_source={}, source_threads={}, source={}",
+                        missing_count, source_count, source_path
+                    ),
+                    false,
+                );
+                if !synced {
+                    warnings.push(format!(
+                        "clone is missing {} threads from current Codex sync package/source",
+                        missing_count
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warnings.push(format!("sync package thread comparison skipped: {}", error));
+                add_check(&mut checks, "sync_package_threads", false, error, false);
+            }
+        }
     }
     let session_index_matches = thread_count == 0 || session_index_count == thread_count;
     if !session_index_matches {
@@ -314,6 +334,52 @@ pub fn status_with_context(
         last_backup_path,
         warnings,
         checks,
+    })
+}
+
+fn collect_db_status_metrics(
+    codex_home: &Path,
+    db_path: &Path,
+    target: &SyncTarget,
+    checks: &mut Vec<CodexHistoryCheck>,
+) -> Result<DbStatusMetrics, String> {
+    let conn = open_readonly(db_path)?;
+    sqlite_integrity_check_conn(&conn)?;
+    let columns = thread_columns(&conn)?;
+    if !table_exists(&conn, "threads")? {
+        add_check(
+            checks,
+            "threads_table",
+            false,
+            "missing threads table".to_string(),
+            true,
+        );
+        return Ok(DbStatusMetrics::default());
+    }
+
+    let thread_count = query_i64(&conn, "SELECT COUNT(*) FROM threads", [])?;
+    let provider_counts = query_counts(
+        &conn,
+        "SELECT COALESCE(model_provider, ''), COUNT(*) FROM threads GROUP BY model_provider ORDER BY COUNT(*) DESC, model_provider ASC",
+    )?;
+    let model_counts = if columns.iter().any(|column| column == "model") {
+        query_counts(
+            &conn,
+            "SELECT COALESCE(model, ''), COUNT(*) FROM threads GROUP BY model ORDER BY COUNT(*) DESC, model ASC",
+        )?
+    } else {
+        Vec::new()
+    };
+    let mismatch_count = count_mismatches(&conn, &columns, target)?;
+    let missing_session_files = count_missing_session_files(codex_home, &conn, &columns)?;
+
+    add_check(checks, "database_integrity", true, "ok".to_string(), true);
+    Ok(DbStatusMetrics {
+        thread_count,
+        provider_counts,
+        model_counts,
+        mismatch_count,
+        missing_session_files,
     })
 }
 
@@ -751,6 +817,27 @@ fn open_readonly(path: &Path) -> Result<Connection, String> {
     })
 }
 
+fn sqlite_integrity_check_conn(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("PRAGMA integrity_check")
+        .map_err(|error| format!("prepare sqlite integrity check failed: {}", error))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("run sqlite integrity check failed: {}", error))?;
+    let mut messages = Vec::new();
+    for row in rows {
+        messages.push(row.map_err(|error| format!("read sqlite integrity row failed: {}", error))?);
+    }
+    if messages.len() == 1 && messages[0].eq_ignore_ascii_case("ok") {
+        Ok(())
+    } else {
+        Err(format!(
+            "sqlite integrity check failed: {}",
+            messages.join("; ")
+        ))
+    }
+}
+
 fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
     let count: i64 = conn
         .query_row(
@@ -826,6 +913,10 @@ fn count_mismatches(
 
 fn read_thread_ids(db_path: &Path) -> Result<HashSet<String>, String> {
     let conn = open_readonly(db_path)?;
+    read_thread_ids_from_conn(&conn)
+}
+
+fn read_thread_ids_from_conn(conn: &Connection) -> Result<HashSet<String>, String> {
     if !table_exists(&conn, "threads")? {
         return Ok(HashSet::new());
     }
@@ -859,8 +950,64 @@ fn sync_threads_from_default(
     dry_run: bool,
     warnings: &mut Vec<String>,
 ) -> Result<i64, String> {
+    let package_home = crate::modules::codex_sync_package::package_codex_home_dir()?;
+    if package_home.join(DB_FILE).exists() {
+        return sync_threads_from_source(
+            codex_home,
+            &package_home,
+            conn,
+            columns,
+            dry_run,
+            warnings,
+        );
+    }
+
     let default_home = crate::modules::codex_instance::get_default_codex_home()?;
+    warnings.push(format!(
+        "sync package history database missing; falling back to live Codex home: {}",
+        default_home.display()
+    ));
     sync_threads_from_source(codex_home, &default_home, conn, columns, dry_run, warnings)
+}
+
+fn sync_source_thread_delta(
+    codex_home: &Path,
+    db_path: &Path,
+) -> Result<Option<(i64, i64, String)>, String> {
+    let Ok(managed_root) = crate::modules::codex_instance::get_default_instances_root_dir() else {
+        return Ok(None);
+    };
+    if !is_under(codex_home, &managed_root) {
+        return Ok(None);
+    }
+    let package_home = crate::modules::codex_sync_package::package_codex_home_dir()?;
+    let source_home = if package_home.join(DB_FILE).exists() {
+        package_home
+    } else {
+        crate::modules::codex_instance::get_default_codex_home()?
+    };
+    if paths_equal_or_same(codex_home, &source_home) {
+        return Ok(None);
+    }
+    let source_db = source_home.join(DB_FILE);
+    if !source_db.exists() {
+        return Ok(None);
+    }
+
+    let source_ids = read_thread_ids(&source_db)?;
+    if source_ids.is_empty() {
+        return Ok(None);
+    }
+    let local_ids = read_thread_ids(db_path)?;
+    let missing = source_ids
+        .iter()
+        .filter(|id| !local_ids.contains(*id))
+        .count() as i64;
+    Ok(Some((
+        missing,
+        source_ids.len() as i64,
+        source_home.to_string_lossy().to_string(),
+    )))
 }
 
 fn sync_threads_from_source(
@@ -883,6 +1030,7 @@ fn sync_threads_from_source(
     }
 
     let source_conn = open_readonly(&source_db)?;
+    sqlite_integrity_check_conn(&source_conn)?;
     if !table_exists(&source_conn, "threads")? {
         return Ok(0);
     }
@@ -897,7 +1045,7 @@ fn sync_threads_from_source(
         return Ok(0);
     }
 
-    let source_ids = read_thread_ids(&source_db)?;
+    let source_ids = read_thread_ids_from_conn(&source_conn)?;
     if source_ids.is_empty() {
         return Ok(0);
     }
@@ -969,6 +1117,18 @@ fn sync_memory_directories_from_default(
     Ok(())
 }
 
+fn is_sqlite_sidecar_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name.ends_with(".sqlite-wal")
+        || name.ends_with(".sqlite-shm")
+        || name.ends_with(".sqlite3-wal")
+        || name.ends_with(".sqlite3-shm")
+        || name.ends_with(".db-wal")
+        || name.ends_with(".db-shm")
+}
+
 fn copy_directory_newer_or_missing(source: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target).map_err(|error| {
         format!(
@@ -993,6 +1153,8 @@ fn copy_directory_newer_or_missing(source: &Path, target: &Path) -> Result<(), S
             .map_err(|error| format!("read source entry type failed: {}", error))?;
         if file_type.is_dir() {
             copy_directory_newer_or_missing(&source_path, &target_path)?;
+        } else if file_type.is_file() && is_sqlite_sidecar_file(&source_path) {
+            continue;
         } else if file_type.is_file() && should_copy_file(&source_path, &target_path) {
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
@@ -1339,14 +1501,17 @@ fn make_backup(codex_home: &Path) -> Result<PathBuf, String> {
     let backup_path = codex_home
         .join(BACKUP_DIR)
         .join(format!("state_5.sqlite.sync.{}.bak", timestamp));
-    fs::copy(&db_path, &backup_path).map_err(|error| {
-        format!(
-            "copy sqlite backup failed ({} -> {}): {}",
-            db_path.display(),
-            backup_path.display(),
-            error
-        )
-    })?;
+    conn.backup(DatabaseName::Main, &backup_path, None)
+        .map_err(|error| {
+            format!(
+                "sqlite online backup failed ({} -> {}): {}",
+                db_path.display(),
+                backup_path.display(),
+                error
+            )
+        })?;
+    let backup_conn = open_readonly(&backup_path)?;
+    sqlite_integrity_check_conn(&backup_conn)?;
     let thread_count = query_i64(&conn, "SELECT COUNT(*) FROM threads", [])?;
     let session_index_count = count_jsonl_lines(&codex_home.join(SESSION_INDEX_FILE));
     let manifest = BackupManifest {

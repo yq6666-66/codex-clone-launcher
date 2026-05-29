@@ -1,22 +1,12 @@
 # Codex Clone Launcher Notes
 
-The app creates isolated Codex Desktop profiles for users who want multiple Codex accounts or quota pools on the same computer while keeping useful local history available across clones.
-
-Each clone gets its own `CODEX_HOME`. Credentials stay isolated, but selected local data can be inherited and repaired so Codex Desktop can show copied projects and conversations.
+The app creates isolated Codex Desktop profiles and can synchronize local Codex history into a clone without copying authentication secrets.
 
 ## History Sync
 
 When local data inheritance is enabled, the app copies history artifacts, refreshes `session_index.jsonl`, and aligns stored thread metadata to the clone's current `model_provider` and `model`.
 
 The sync logic intentionally avoids copying source `auth.json` or account tokens.
-
-## Release Packages
-
-The public release provides:
-
-- Windows x64 installer
-- Windows x64 portable zip
-- macOS universal DMG
 
 ## Development
 

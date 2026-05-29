@@ -446,6 +446,75 @@ select option {
   padding: 32px;
 }
 
+.instance-list-section {
+  margin-top: 22px;
+}
+
+.sync-package-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 112, 101, 0.22);
+  border-radius: 18px;
+  background: rgba(130, 37, 32, 0.16);
+}
+
+.sync-package-panel.ready {
+  border-color: rgba(56, 242, 211, 0.2);
+  background: rgba(14, 112, 85, 0.16);
+}
+
+.sync-package-panel.stale {
+  border-color: rgba(255, 214, 168, 0.34);
+  background: rgba(116, 82, 24, 0.18);
+}
+
+.panel-title {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.panel-title strong {
+  color: #f6fbff;
+  font-size: 18px;
+}
+
+.panel-title span,
+.package-stats {
+  color: #9eb0c8;
+  font-size: 13px;
+}
+
+.sync-package-panel code {
+  display: block;
+  max-width: min(900px, 64vw);
+  overflow: hidden;
+  color: #8fa1b8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.package-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.package-stats .warning {
+  color: #ffd6a8;
+}
+
+.package-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .section-header {
   display: flex;
   align-items: center;

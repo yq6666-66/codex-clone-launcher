@@ -5,18 +5,29 @@ $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $LogPath = Join-Path $ProjectRoot 'codex-clone-launcher.log'
 $UpdateSettingsDir = Join-Path $env:LOCALAPPDATA 'codex-clone-launcher'
 $UpdateSettingsPath = Join-Path $UpdateSettingsDir 'update_settings.json'
-$AppExe = Join-Path $ProjectRoot 'target\release\codex-clone-launcher.exe'
-$DebugExe = Join-Path $ProjectRoot 'target\debug\codex-clone-launcher.exe'
-$StampPath = Join-Path $ProjectRoot 'target\release\.codex-clone-tauri-build.stamp'
+$CargoTomlPath = Join-Path $ProjectRoot 'src-tauri\Cargo.toml'
 $DistIndex = Join-Path $ProjectRoot 'dist\index.html'
+$StampPath = Join-Path $ProjectRoot 'target\release\.codex-clone-tauri-build.stamp'
 
 Set-Location -LiteralPath $ProjectRoot
-Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
 
 function Write-LauncherLog {
   param([string]$Message)
   $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
   Add-Content -LiteralPath $LogPath -Value "[$timestamp] $Message"
+}
+
+function Get-TauriPackageName {
+  if (-not (Test-Path -LiteralPath $CargoTomlPath)) {
+    return 'codex-clone-launcher'
+  }
+
+  $match = Select-String -LiteralPath $CargoTomlPath -Pattern '^\s*name\s*=\s*"([^"]+)"' | Select-Object -First 1
+  if ($match -and $match.Matches.Count -gt 0) {
+    return $match.Matches[0].Groups[1].Value
+  }
+
+  return 'codex-clone-launcher'
 }
 
 function Invoke-LoggedNpm {
@@ -49,65 +60,48 @@ function Invoke-LoggedNpm {
   }
 }
 
-function Get-NewestSourceWriteTime {
-  $roots = @(
-    (Join-Path $ProjectRoot 'src'),
-    (Join-Path $ProjectRoot 'src-tauri\src')
-  ) | Where-Object { Test-Path -LiteralPath $_ }
+function Stop-ManagedProcesses {
+  param([string[]]$ExecutablePaths)
 
-  $files = @()
-  foreach ($root in $roots) {
-    $files += Get-ChildItem -LiteralPath $root -Recurse -File -Include *.ts,*.tsx,*.css,*.rs
+  $knownPaths = $ExecutablePaths | ForEach-Object { $_.ToLowerInvariant() }
+  foreach ($processName in @('codex-clone-launcher.exe', 'cockpit-tools.exe')) {
+    Get-CimInstance Win32_Process -Filter "Name = '$processName'" |
+      Where-Object {
+        $_.ExecutablePath -and ($knownPaths -contains $_.ExecutablePath.ToLowerInvariant())
+      } |
+      ForEach-Object {
+        Write-LauncherLog "Stopping old $processName pid=$($_.ProcessId)"
+        Stop-Process -Id $_.ProcessId -Force
+      }
   }
-  foreach ($path in @(
-      (Join-Path $ProjectRoot 'src-tauri\tauri.conf.json'),
-      (Join-Path $ProjectRoot 'src-tauri\Cargo.toml'),
-      (Join-Path $ProjectRoot 'package.json')
-    )) {
-    if (Test-Path -LiteralPath $path) {
-      $files += Get-Item -LiteralPath $path
-    }
-  }
-
-  if (-not $files) {
-    return [DateTime]::MinValue
-  }
-
-  return ($files | ForEach-Object { $_.LastWriteTimeUtc } | Sort-Object -Descending | Select-Object -First 1)
 }
 
-function Test-NeedsTauriBuild {
-  if (-not (Test-Path -LiteralPath $AppExe)) {
-    return $true
-  }
-  if (-not (Test-Path -LiteralPath $StampPath)) {
-    return $true
-  }
-  if (-not (Test-Path -LiteralPath $DistIndex)) {
-    return $true
-  }
-
-  $stampTime = (Get-Item -LiteralPath $StampPath).LastWriteTimeUtc
-  $distTime = (Get-Item -LiteralPath $DistIndex).LastWriteTimeUtc
-  $sourceTime = Get-NewestSourceWriteTime
-
-  return ($stampTime -lt $distTime) -or ($stampTime -lt $sourceTime)
-}
+$startupMutex = New-Object System.Threading.Mutex($false, 'Global\CodexCloneLauncherStartup')
+$hasStartupLock = $false
 
 try {
-  $appExeLower = $AppExe.ToLowerInvariant()
-  $debugExeLower = $DebugExe.ToLowerInvariant()
-  Get-CimInstance Win32_Process -Filter "Name = 'codex-clone-launcher.exe'" |
-    Where-Object {
-      $_.ExecutablePath -and (
-        $_.ExecutablePath.ToLowerInvariant() -eq $appExeLower -or
-        $_.ExecutablePath.ToLowerInvariant() -eq $debugExeLower
-      )
-    } |
-    ForEach-Object {
-      Write-LauncherLog "Stopping old codex-clone-launcher.exe pid=$($_.ProcessId)"
-      Stop-Process -Id $_.ProcessId -Force
-    }
+  New-Item -ItemType Directory -Path (Split-Path -Parent $LogPath) -Force | Out-Null
+  Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
+
+  $hasStartupLock = $startupMutex.WaitOne(0)
+  if (-not $hasStartupLock) {
+    Write-LauncherLog 'Another launcher startup is already running; exiting this duplicate request.'
+    return
+  }
+
+  $packageName = Get-TauriPackageName
+  $appExe = Join-Path $ProjectRoot "target\release\$packageName.exe"
+  $debugExe = Join-Path $ProjectRoot "target\debug\$packageName.exe"
+  $knownExeCandidates = @(
+    $appExe,
+    $debugExe,
+    (Join-Path $ProjectRoot 'target\release\codex-clone-launcher.exe'),
+    (Join-Path $ProjectRoot 'target\debug\codex-clone-launcher.exe'),
+    (Join-Path $ProjectRoot 'target\release\cockpit-tools.exe'),
+    (Join-Path $ProjectRoot 'target\debug\cockpit-tools.exe')
+  ) | Select-Object -Unique
+
+  Stop-ManagedProcesses -ExecutablePaths $knownExeCandidates
 
   New-Item -ItemType Directory -Path $UpdateSettingsDir -Force | Out-Null
   $settings = @{
@@ -125,34 +119,37 @@ try {
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   $env:Path = "$machinePath;$userPath"
 
-  if (-not (Test-Path -LiteralPath $DistIndex)) {
-    Write-LauncherLog 'dist is missing; running npm run build'
-    $exitCode = Invoke-LoggedNpm @('run', 'build')
-    if ($exitCode -ne 0) {
-      throw "npm run build failed with exit code $exitCode"
+  if (-not (Test-Path -LiteralPath $appExe)) {
+    if (-not (Test-Path -LiteralPath $DistIndex)) {
+      Write-LauncherLog 'dist is missing; running npm run build'
+      $buildExitCode = Invoke-LoggedNpm @('run', 'build')
+      if ($buildExitCode -ne 0) {
+        throw "npm run build failed with exit code $buildExitCode"
+      }
     }
-  }
 
-  if (Test-NeedsTauriBuild) {
-    Write-LauncherLog 'Tauri release executable is missing or stale; running npm run tauri -- build --no-bundle'
-    $exitCode = Invoke-LoggedNpm @('run', 'tauri', '--', 'build', '--no-bundle')
-    if ($exitCode -ne 0) {
-      throw "Tauri build failed with exit code $exitCode"
+    Write-LauncherLog "Release executable is missing; running npm run tauri -- build --no-bundle for $packageName"
+    $tauriExitCode = Invoke-LoggedNpm @('run', 'tauri', '--', 'build', '--no-bundle')
+    if ($tauriExitCode -ne 0) {
+      throw "Tauri build failed with exit code $tauriExitCode"
     }
-    if (-not (Test-Path -LiteralPath $AppExe)) {
-      throw "Tauri build finished but executable was not produced: $AppExe"
+
+    if (-not (Test-Path -LiteralPath $appExe)) {
+      throw "Desktop executable was not produced: $appExe"
     }
+
     New-Item -ItemType Directory -Path (Split-Path -Parent $StampPath) -Force | Out-Null
     [System.IO.File]::WriteAllText($StampPath, (Get-Date).ToUniversalTime().ToString('o'), [System.Text.UTF8Encoding]::new($false))
   }
 
-  if (-not (Test-Path -LiteralPath $AppExe)) {
-    throw "未找到桌面程序：$AppExe"
-  }
-
-  Write-LauncherLog "Starting $AppExe"
-  Start-Process -FilePath $AppExe -WorkingDirectory $ProjectRoot
+  Write-LauncherLog "Starting $appExe"
+  Start-Process -FilePath $appExe -WorkingDirectory $ProjectRoot
 } catch {
   Write-LauncherLog ("Launcher failed: " + $_.Exception.Message)
   throw
+} finally {
+  if ($hasStartupLock) {
+    $startupMutex.ReleaseMutex() | Out-Null
+  }
+  $startupMutex.Dispose()
 }

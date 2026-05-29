@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use chrono::Utc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use toml_edit::Document;
 use uuid::Uuid;
 
 use crate::models::codex::CodexAppSpeed;
@@ -32,12 +33,18 @@ const CODEX_MEMORY_DIRECTORIES: &[&str] = &[
     "archived_sessions",
     "mcp-servers",
     "plugins",
+    "cache",
     "memories",
     "sqlite",
     "ambient-suggestions",
+    ".tmp/plugins",
+    ".tmp/bundled-marketplaces",
 ];
 
 const CODEX_MEMORY_FILES: &[&str] = &[
+    "config.toml",
+    ".credentials.json",
+    ".tmp/plugins.sha",
     "session_index.jsonl",
     "history.jsonl",
     "state_5.sqlite",
@@ -50,6 +57,19 @@ const CODEX_MEMORY_FILES: &[&str] = &[
     "external_agent_session_imports.json",
     "transcription-history.jsonl",
     ".codex-global-state.json",
+];
+
+const CODEX_LIGHTWEIGHT_PLUGIN_STATE_FILES: &[&str] = &[".credentials.json", ".tmp/plugins.sha"];
+
+const CODEX_INHERITED_CONFIG_TABLES: &[&str] = &[
+    "features",
+    "notice",
+    "marketplaces",
+    "mcp_servers",
+    "memories",
+    "plugins",
+    "projects",
+    "shell_environment_policy",
 ];
 
 const CODEX_SHARED_MEMORY_ITEMS: &[&str] = &[
@@ -997,6 +1017,182 @@ fn memory_entry_error(relative_path: &str, kind: &str, error: String) -> MemoryI
     }
 }
 
+fn normalize_toml_path_literal(path: &Path) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!(r"\\?\{}", path.to_string_lossy().replace('/', "\\"))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        path.to_string_lossy().to_string()
+    }
+}
+
+fn rewrite_inherited_config_paths(doc: &mut Document, source_home: &Path, target_home: &Path) {
+    let replacements = [
+        (
+            source_home.join(".tmp").join("plugins"),
+            target_home.join(".tmp").join("plugins"),
+        ),
+        (
+            source_home.join(".tmp").join("bundled-marketplaces"),
+            target_home.join(".tmp").join("bundled-marketplaces"),
+        ),
+        (
+            source_home.join("plugins").join("cache"),
+            target_home.join("plugins").join("cache"),
+        ),
+    ];
+
+    for (source, target) in replacements {
+        replace_toml_string_paths(
+            doc.as_item_mut(),
+            &normalize_toml_path_literal(&source),
+            &normalize_toml_path_literal(&target),
+        );
+        replace_toml_string_paths(
+            doc.as_item_mut(),
+            &source.to_string_lossy(),
+            &target.to_string_lossy(),
+        );
+    }
+}
+
+fn replace_toml_string_paths(item: &mut toml_edit::Item, source: &str, target: &str) {
+    match item {
+        toml_edit::Item::Value(value) => {
+            if let Some(text) = value.as_str() {
+                if text.contains(source) {
+                    *item = toml_edit::value(text.replace(source, target));
+                }
+            }
+        }
+        toml_edit::Item::Table(table) => {
+            for (_, child) in table.iter_mut() {
+                replace_toml_string_paths(child, source, target);
+            }
+        }
+        toml_edit::Item::ArrayOfTables(array) => {
+            for table in array.iter_mut() {
+                for (_, child) in table.iter_mut() {
+                    replace_toml_string_paths(child, source, target);
+                }
+            }
+        }
+        toml_edit::Item::None => {}
+    }
+}
+
+fn normalize_inherited_config_toml(profile_dir: &Path, source_home: &Path) -> Result<(), String> {
+    let config_path = profile_dir.join("config.toml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&config_path).map_err(|e| {
+        format!(
+            "read inherited config.toml failed: {}: {}",
+            config_path.display(),
+            e
+        )
+    })?;
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut doc = content
+        .parse::<Document>()
+        .map_err(|e| format!("parse inherited config.toml failed: {}", e))?;
+    rewrite_inherited_config_paths(&mut doc, source_home, profile_dir);
+    let content = doc.to_string();
+    modules::atomic_write::write_string_atomic(&config_path, &content)
+        .map_err(|e| format!("write inherited config.toml failed: {}", e))
+}
+
+fn copy_lightweight_plugin_state_if_missing(profile_dir: &Path, source_home: &Path) {
+    for relative_path in CODEX_LIGHTWEIGHT_PLUGIN_STATE_FILES {
+        let source = source_home.join(relative_path);
+        let target = profile_dir.join(relative_path);
+        if !source.exists() || target.exists() {
+            continue;
+        }
+        if let Err(error) = copy_memory_file(&source, &target) {
+            modules::logger::log_warn(&format!(
+                "[Codex Memory] failed to inherit lightweight plugin state {}: {}",
+                relative_path, error
+            ));
+        }
+    }
+}
+
+fn sync_inherited_plugin_config_from_source(
+    profile_dir: &Path,
+    source_home: &Path,
+) -> Result<(), String> {
+    if paths_point_to_same_location(profile_dir, source_home) {
+        return Ok(());
+    }
+
+    fs::create_dir_all(profile_dir).map_err(|e| {
+        format!(
+            "create Codex clone home failed: {}: {}",
+            profile_dir.display(),
+            e
+        )
+    })?;
+    copy_lightweight_plugin_state_if_missing(profile_dir, source_home);
+
+    let source_config_path = source_home.join("config.toml");
+    if !source_config_path.exists() {
+        return Ok(());
+    }
+
+    let source_content = fs::read_to_string(&source_config_path).map_err(|e| {
+        format!(
+            "read source config.toml failed: {}: {}",
+            source_config_path.display(),
+            e
+        )
+    })?;
+    if source_content.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut source_doc = source_content
+        .parse::<Document>()
+        .map_err(|e| format!("parse source config.toml failed: {}", e))?;
+    rewrite_inherited_config_paths(&mut source_doc, source_home, profile_dir);
+
+    let target_config_path = profile_dir.join("config.toml");
+    let target_content = fs::read_to_string(&target_config_path).unwrap_or_default();
+    let mut target_doc = if target_content.trim().is_empty() {
+        Document::new()
+    } else {
+        target_content
+            .parse::<Document>()
+            .map_err(|e| format!("parse clone config.toml failed: {}", e))?
+    };
+
+    for key in CODEX_INHERITED_CONFIG_TABLES {
+        if let Some(item) = source_doc.get(key) {
+            target_doc[key] = item.clone();
+        } else {
+            let _ = target_doc.remove(key);
+        }
+    }
+    rewrite_inherited_config_paths(&mut target_doc, source_home, profile_dir);
+
+    let content = target_doc.to_string();
+    modules::atomic_write::write_string_atomic(&target_config_path, &content)
+        .map_err(|e| format!("write clone config.toml failed: {}", e))
+}
+
+pub fn sync_inherited_plugin_config(profile_dir: &Path) -> Result<(), String> {
+    let source_home = get_default_codex_home()?;
+    sync_inherited_plugin_config_from_source(profile_dir, &source_home)
+}
+
 pub fn inherit_local_memory_artifacts(profile_dir: &Path) -> Result<(), String> {
     let source_home = get_default_codex_home()?;
     if paths_point_to_same_location(profile_dir, &source_home) {
@@ -1066,6 +1262,7 @@ pub fn inherit_local_memory_artifacts(profile_dir: &Path) -> Result<(), String> 
     }
 
     ensure_instance_shared_skills(profile_dir)?;
+    normalize_inherited_config_toml(profile_dir, &source_home)?;
     for relative_path in CODEX_SHARED_MEMORY_ITEMS {
         let target = profile_dir.join(relative_path);
         entries.push(MemoryInheritanceEntry {
@@ -1478,6 +1675,139 @@ mod tests {
                 .expect("read copied nested file"),
             "child"
         );
+
+        fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn inherited_config_rewrites_plugin_sources_to_clone_home() {
+        let temp_dir = make_temp_dir("codex-config-path-rewrite-test");
+        let source_home = temp_dir.join("source").join(".codex");
+        let clone_home = temp_dir.join("clone");
+        fs::create_dir_all(&clone_home).expect("create clone home");
+
+        let source_plugins = normalize_toml_path_literal(
+            &source_home
+                .join(".tmp")
+                .join("bundled-marketplaces")
+                .join("openai-bundled"),
+        );
+        let source_cache = normalize_toml_path_literal(
+            &source_home
+                .join("plugins")
+                .join("cache")
+                .join("openai-curated"),
+        );
+        fs::write(
+            clone_home.join("config.toml"),
+            format!(
+                r#"[marketplaces.openai-bundled]
+source = '{}'
+
+[marketplaces.openai-curated]
+source = '{}'
+
+[plugins."linear@openai-curated"]
+enabled = true
+"#,
+                source_plugins, source_cache
+            ),
+        )
+        .expect("write config");
+
+        normalize_inherited_config_toml(&clone_home, &source_home).expect("normalize config");
+        let content = fs::read_to_string(clone_home.join("config.toml")).expect("read config");
+        assert!(content.contains("linear@openai-curated"));
+        assert!(content.contains(&normalize_toml_path_literal(
+            &clone_home
+                .join(".tmp")
+                .join("bundled-marketplaces")
+                .join("openai-bundled")
+        )));
+        assert!(content.contains(&normalize_toml_path_literal(
+            &clone_home
+                .join("plugins")
+                .join("cache")
+                .join("openai-curated")
+        )));
+        assert!(!content.contains(&source_home.to_string_lossy().to_string()));
+
+        fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn plugin_config_sync_preserves_clone_provider_config() {
+        let temp_dir = make_temp_dir("codex-plugin-config-sync-test");
+        let source_home = temp_dir.join("source").join(".codex");
+        let clone_home = temp_dir.join("clone");
+        fs::create_dir_all(&source_home).expect("create source home");
+        fs::create_dir_all(&clone_home).expect("create clone home");
+
+        let source_cache = normalize_toml_path_literal(
+            &source_home
+                .join("plugins")
+                .join("cache")
+                .join("openai-curated"),
+        );
+        fs::write(source_home.join(".credentials.json"), r#"{"plugins":true}"#)
+            .expect("write source credentials");
+        fs::write(
+            source_home.join("config.toml"),
+            format!(
+                r#"model = "gpt-source"
+
+[marketplaces.openai-curated]
+source = '{}'
+source_type = "local"
+
+[mcp_servers.github]
+type = "stdio"
+command = "npx"
+
+[plugins."linear@openai-curated"]
+enabled = true
+"#,
+                source_cache
+            ),
+        )
+        .expect("write source config");
+        fs::write(
+            clone_home.join("config.toml"),
+            r#"model = "gpt-clone"
+model_provider = "codex_local_access"
+
+[model_providers.codex_local_access]
+name = "Custom API"
+base_url = "https://relay.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "sk-test"
+
+[plugins."browser-use@openai-bundled"]
+enabled = true
+"#,
+        )
+        .expect("write clone config");
+
+        sync_inherited_plugin_config_from_source(&clone_home, &source_home).expect("sync config");
+        let content = fs::read_to_string(clone_home.join("config.toml")).expect("read config");
+
+        assert!(content.contains(r#"model = "gpt-clone""#));
+        assert!(content.contains(r#"model_provider = "codex_local_access""#));
+        assert!(content.contains("[model_providers.codex_local_access]"));
+        assert!(content.contains(r#"base_url = "https://relay.example.com/v1""#));
+        assert!(content.contains(r#"experimental_bearer_token = "sk-test""#));
+        assert!(content.contains("[plugins.\"linear@openai-curated\"]"));
+        assert!(content.contains("[mcp_servers.github]"));
+        assert!(content.contains(&normalize_toml_path_literal(
+            &clone_home
+                .join("plugins")
+                .join("cache")
+                .join("openai-curated")
+        )));
+        assert!(!content.contains("gpt-source"));
+        assert!(!content.contains("[plugins.\"browser-use@openai-bundled\"]"));
+        assert!(clone_home.join(".credentials.json").exists());
 
         fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
     }

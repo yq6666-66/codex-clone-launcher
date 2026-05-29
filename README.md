@@ -1,75 +1,79 @@
-# Codex Clone Launcher
+# Codex 分身启动器
 
-Codex Clone Launcher is a desktop app for running multiple Codex Desktop clones on the same computer. Each clone uses its own isolated `CODEX_HOME`, so different clones can sign in with different accounts or quota pools, while the app can still synchronize local Codex conversations, memories, and indexes into the clone when you choose to inherit data.
+[English](README.en.md)
 
-In short: keep separate Codex accounts and usage quotas, but make useful local history available across clones.
+Codex Clone Launcher 是一款桌面应用程序，用于在同一台电脑上运行多个 Codex Desktop 克隆版本。每个克隆版本都使用自己独立的 `CODEX_HOME`，因此不同克隆可以使用不同账号或配额池；同时，在选择继承数据时，应用仍然可以把本地 Codex 对话、记忆、索引和常用本地能力同步到克隆版本中。
 
-## Downloads
+简而言之：保持 Codex 账号和使用配额彼此独立，同时允许克隆之间访问有用的本地历史记录。
 
-Get the latest Windows and macOS packages from [GitHub Releases](https://github.com/yq6666-66/codex-clone-launcher/releases).
+![Codex 分身启动器界面](docs/images/codex-clone-launcher-v0.24.8.png)
 
-- Windows x64 installer: `codex-clone-launcher_0.24.7_windows_x64_setup.exe`
-- Windows x64 portable build: `codex-clone-launcher_0.24.7_windows_x64_portable.zip`
-- macOS universal DMG: `codex-clone-launcher_0.24.7_macos_universal.dmg`
+## 下载
 
-## Features
+从 [GitHub Releases](https://github.com/yq6666-66/codex-clone-launcher/releases/latest) 获取最新 Windows 和 macOS 软件包。
 
-- Create, launch, stop, and delete Codex Desktop clones.
-- Keep every clone in a separate `CODEX_HOME`, allowing different accounts and quota pools.
-- Inherit local Codex data without copying source authentication secrets.
-- Copy and repair history artifacts such as `sessions`, `state_5.sqlite`, `session_index.jsonl`, `memories`, and plugin cache.
-- Align inherited `threads.model_provider` and `threads.model` values to the clone's current `config.toml`.
-- Update session JSONL metadata and rebuild `session_index.jsonl` so inherited conversations appear in Codex Desktop.
-- Show history health, thread count, provider/model mismatch, verification, sync, and repair status in the clone list.
-- Detect Codex Desktop on Windows and refresh Codex app-server metadata for cloned profiles.
+- Windows x64 便携版：`codex-clone-launcher_0.24.8_windows_x64_portable.zip`
+- macOS 通用 DMG：`codex-clone-launcher_0.24.8_macos_universal.dmg`
 
-## Use Cases
+说明：`v0.24.8` 是当前发布包版本；部分现成应用二进制内部仍可能显示 `0.24.7`。
 
-- Use several Codex accounts on one machine without mixing credentials.
-- Keep quota usage separate between personal, work, or backup accounts.
-- Reuse existing Codex conversations and memory context in a new clone.
-- Repair inherited history when Codex Desktop does not show copied conversations.
+## 特征
 
-## Privacy Boundary
+- 创建、启动、停止和删除 Codex Desktop 克隆。
+- 将每个克隆实例放在单独的 `CODEX_HOME` 中，允许使用不同账号和配额池。
+- 继承本地 Codex 数据，而不复制源身份验证密钥。
+- 复制并修复历史记录，例如 `sessions`、`state_5.sqlite`、`session_index.jsonl`、`memories` 和插件缓存。
+- 将继承的 `threads.model_provider` 与 `threads.model` 对齐到克隆当前的 `config.toml`。
+- 更新会话 JSONL 元数据并重新构建 `session_index.jsonl`，以便继承的对话显示在 Codex Desktop 中。
+- 在克隆列表中显示历史健康状况、线程数、provider/model 不匹配、验证、同步和修复状态。
+- 检测 Windows 上的 Codex Desktop，并刷新 Codex 应用服务器中克隆配置文件的元数据。
 
-The app is designed around a strict privacy boundary: history synchronization should not copy authentication secrets. This repository is source code only. Do not commit local runtime data, including:
+## 使用提示
+
+- 在分身里要新开一个对话；继续旧对话可能仍然使用本体会话或本体额度。
+- 如果 Codex 显示未响应，先等一会儿；系统弹窗出现时选择等待应用，不要直接关闭。
+- 加载同步包、plugins、skills 或历史数据时，应用可能短暂卡顿。
+- 如果历史、skills、MCP、plugins 或 memories 没有出现，先刷新/提取本体同步包，再执行同步/修复。
+
+## 隐私边界
+
+应用围绕严格的隐私边界设计：历史同步不应复制身份验证密钥。本仓库只包含源代码。不要提交本地运行数据，包括：
 
 - `auth.json`
 - `config.toml`
 - `state_5.sqlite`
 - `sessions/`
 - `memories/`
-- API keys, OAuth tokens, refresh tokens, or copied account data
-- history sync backups or manifests from a real profile
+- API keys、OAuth tokens、refresh tokens 或复制的账号数据
+- 来自真实配置文件的历史同步备份或 manifest
 
-The history sync logic is designed to copy conversation and index artifacts without copying source authentication secrets.
+历史同步逻辑用于复制对话和索引数据，不用于复制源身份验证密钥。
 
-## Platform Notes
+## 平台说明
 
-- Windows: the release includes an installer and a portable zip.
-- macOS: the release includes a universal DMG for Apple Silicon and Intel Macs.
-- macOS packages are not currently notarized with an Apple Developer ID, so Gatekeeper may require right-clicking the app and choosing `Open`.
-- Windows packages are signed with the current release certificate when available, but SmartScreen reputation may still depend on certificate trust and download reputation.
+- Windows：当前发布提供 Windows x64 便携版。
+- macOS：当前发布提供 Apple Silicon 和 Intel Mac 通用 DMG。
+- macOS 包当前未使用 Apple Developer ID 公证，因此 Gatekeeper 可能要求右键点击应用并选择 `Open`。
 
-## Development
+## 开发
 
 ```powershell
 npm ci
 npm run verify
 ```
 
-Run the desktop app in development mode:
+以开发模式运行桌面应用：
 
 ```powershell
 npm run tauri:dev
 ```
 
-Build the desktop app:
+构建桌面应用：
 
 ```powershell
 npm run tauri build
 ```
 
-## License
+## 许可证
 
 MIT

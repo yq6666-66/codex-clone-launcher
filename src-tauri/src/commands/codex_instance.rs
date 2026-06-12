@@ -3383,9 +3383,11 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "List Title");
         assert_eq!(sessions[0].message_count, 2);
+        let expected_last_message_at =
+            format_export_timestamp(Some(&json!("2026-06-03T12:00:02Z")));
         assert_eq!(
             sessions[0].last_message_at.as_deref(),
-            Some("2026-06-03 20:00:02")
+            expected_last_message_at.as_deref()
         );
         assert_eq!(
             sessions[0].project_dir.as_deref(),

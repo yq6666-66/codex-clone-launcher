@@ -6,7 +6,7 @@ This project uses release tags such as `vX.Y.Z`. The app updater expects the
 tag version, `package.json` version, Tauri version, installer assets, signatures,
 and `latest.json` metadata to match.
 
-## Unreleased
+## 0.24.9 - 2026-06-13
 
 - Simplified the app scope to Codex clone/profile workflows.
 - Clarified the source/clone sync package privacy boundary.

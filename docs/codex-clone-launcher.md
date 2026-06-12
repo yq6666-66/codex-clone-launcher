@@ -124,7 +124,10 @@ Release builds need:
 - Windows installer assets and `latest.json`
 
 Portable zip assets are useful for manual download, but the automatic updater
-should use a signed `.exe` or `.msi` installer. Verify a published release with:
+should use a signed NSIS `.exe` installer. The verification script still accepts
+MSI assets, but the public workflow builds NSIS by default to avoid
+WiX-specific packaging failures on GitHub-hosted Windows runners. Verify a
+published release with:
 
 ```powershell
 npm run verify:updater-release -- --owner-repo owner/repo --tag vX.Y.Z

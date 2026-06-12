@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="920" viewBox="0 0 1440 920" role="img" aria-labelledby="title desc">
+  <title id="title">Codex Clone Launcher dashboard preview</title>
+  <desc id="desc">A dark dashboard preview showing navigation, clone summary cards, health status, and sync package status.</desc>
+  <defs>
+    <linearGradient id="page" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#061b3d"/>
+      <stop offset="0.52" stop-color="#050b14"/>
+      <stop offset="1" stop-color="#0b4b43"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#45f4e1"/>
+      <stop offset="1" stop-color="#1598f0"/>
+    </linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+    <style>
+      .bg { fill: url(#page); }
+      .shell { fill: #070f1d; stroke: #19314d; stroke-width: 1.5; }
+      .panel { fill: #050c16; stroke: #18304a; stroke-width: 1.4; }
+      .panel-accent { fill: #06111d; stroke: #0a726e; stroke-width: 1.4; }
+      .card { fill: #030a13; stroke: #0a4a55; stroke-width: 1.2; }
+      .button { fill: #08283c; }
+      .muted { fill: #9fb0c8; }
+      .text { fill: #f3f7ff; font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif; }
+      .label { fill: #a7b5cd; font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif; font-weight: 700; }
+      .cyan { fill: #36f7e2; }
+      .brand { fill: #43f2df; font-family: "Segoe UI", Arial, sans-serif; font-weight: 800; letter-spacing: 6px; }
+      .big { font-size: 42px; font-weight: 900; }
+      .h1 { font-size: 40px; font-weight: 900; }
+      .h2 { font-size: 25px; font-weight: 850; }
+      .body { font-size: 21px; }
+      .small { font-size: 18px; }
+      .pill { fill: #07101d; stroke: #1a3857; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1440" height="920"/>
+
+  <text x="76" y="72" class="brand" font-size="20">AI CLONE LAUNCHER</text>
+  <text x="76" y="124" class="text" font-size="38" font-weight="900">Codex 分身启动器</text>
+
+  <rect x="462" y="52" width="690" height="70" rx="35" class="pill"/>
+  <rect x="474" y="62" width="116" height="50" rx="25" fill="url(#accent)"/>
+  <text x="512" y="94" class="text" font-size="21" font-weight="900">控制台</text>
+  <text x="612" y="94" class="label body">创建 Codex</text>
+  <text x="780" y="94" class="label body">Codex 列表</text>
+  <text x="956" y="94" class="label body">设置</text>
+  <text x="1062" y="94" class="label body">操作说明</text>
+
+  <rect x="1172" y="52" width="184" height="70" rx="35" class="pill"/>
+  <circle cx="1262" cy="87" r="25" fill="url(#accent)"/>
+  <text x="1200" y="94" class="muted" font-size="26">□</text>
+  <text x="1252" y="95" class="text" font-size="24">◔</text>
+  <text x="1316" y="95" class="muted" font-size="24">☼</text>
+
+  <rect x="76" y="154" width="1280" height="720" rx="40" class="shell" filter="url(#soft)"/>
+  <text x="114" y="232" class="text h1">控制台</text>
+  <text x="114" y="276" class="muted body">只保留创建、列表、设置入口和分身健康总览；本体与分身仍然严格分离。</text>
+
+  <rect x="935" y="210" width="122" height="50" rx="16" class="button"/>
+  <text x="956" y="242" class="text small" font-weight="850">↗ 去创建</text>
+  <rect x="1068" y="210" width="122" height="50" rx="16" class="button"/>
+  <text x="1089" y="242" class="text small" font-weight="850">▤ 去列表</text>
+  <rect x="1202" y="210" width="116" height="50" rx="16" class="button"/>
+  <text x="1224" y="242" class="text small" font-weight="850">⚙ 去设置</text>
+
+  <rect x="114" y="306" width="1204" height="162" rx="26" class="panel"/>
+  <g transform="translate(142 332)">
+    <rect width="276" height="108" rx="18" class="card"/>
+    <text x="20" y="36" class="cyan" font-size="24">◜</text>
+    <text x="50" y="37" class="label small">运行中分身</text>
+    <text x="20" y="82" class="text big">1</text>
+  </g>
+  <g transform="translate(434 332)">
+    <rect width="276" height="108" rx="18" class="card"/>
+    <text x="20" y="38" class="cyan" font-size="24">▰</text>
+    <text x="52" y="37" class="label small">分身总数</text>
+    <text x="20" y="82" class="text big">2</text>
+  </g>
+  <g transform="translate(726 332)">
+    <rect width="276" height="108" rx="18" class="card"/>
+    <text x="20" y="38" class="cyan" font-size="24">▱</text>
+    <text x="52" y="37" class="label small">同步包状态</text>
+    <text x="20" y="82" class="text big">本体已有更新</text>
+  </g>
+  <g transform="translate(1018 332)">
+    <rect width="270" height="108" rx="18" class="card"/>
+    <text x="20" y="38" class="cyan" font-size="24">⌁</text>
+    <text x="52" y="37" class="label small">启动器版本</text>
+    <text x="20" y="82" class="text big">0.24.10</text>
+  </g>
+
+  <rect x="114" y="490" width="590" height="412" rx="26" class="panel"/>
+  <text x="142" y="540" class="text h2">分身健康</text>
+  <text x="658" y="540" class="cyan" font-size="28">⌁</text>
+  <text x="142" y="584" class="muted body">参考 Codex++ 诊断和 EchoBird 修复入口，先看状态，再执行同步/修复。</text>
+
+  <g transform="translate(142 640)">
+    <rect width="260" height="108" rx="17" class="card"/>
+    <text x="20" y="37" class="cyan" font-size="23">▱</text>
+    <text x="52" y="37" class="label small">已检查</text>
+    <text x="20" y="82" class="text big">2</text>
+  </g>
+  <g transform="translate(418 640)">
+    <rect width="260" height="108" rx="17" class="card"/>
+    <text x="20" y="37" class="cyan" font-size="23">ⓘ</text>
+    <text x="54" y="37" class="label small">mismatch / warning</text>
+    <text x="20" y="82" class="text big">3 / 3</text>
+  </g>
+  <rect x="142" y="780" width="264" height="50" rx="15" class="button"/>
+  <text x="204" y="812" class="text small" font-weight="850">↻ 批量刷新状态</text>
+  <rect x="418" y="780" width="260" height="50" rx="15" class="button"/>
+  <text x="482" y="812" class="text small" font-weight="850">▱ 批量校验分身</text>
+  <rect x="142" y="842" width="536" height="50" rx="15" fill="#062033"/>
+  <text x="332" y="874" class="label small">⌕ 批量同步/修复</text>
+
+  <rect x="726" y="490" width="592" height="306" rx="26" class="panel-accent"/>
+  <text x="754" y="540" class="text h2">本体同步包</text>
+  <text x="1272" y="540" class="cyan" font-size="28">▤</text>
+  <text x="754" y="584" class="muted body">参考 CC Switch 的统一资源视图，只展示稳定资源，运行态和账号配置保持排除。</text>
+  <rect x="754" y="638" width="536" height="60" rx="18" class="panel"/>
+  <text x="774" y="677" class="text h2">本体已有更新</text>
+  <text x="1202" y="676" class="label body">435 MB</text>
+  <rect x="754" y="720" width="160" height="50" rx="15" class="button"/>
+  <text x="774" y="752" class="text small" font-weight="850">▤ 去列表处理</text>
+</svg>

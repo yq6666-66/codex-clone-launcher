@@ -1,5 +1,7 @@
 # Codex Clone Launcher
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Codex Clone Launcher is a small Tauri desktop app for creating isolated Codex Desktop profiles. Each clone gets its own `CODEX_HOME`, so different clones can use different accounts or quota pools while applying a manually extracted sync package when you choose to inherit local data.
 
 ## Project Status
@@ -8,6 +10,10 @@ Codex Clone Launcher is a small Tauri desktop app for creating isolated Codex De
 - Release channel: GitHub Releases with Tauri updater metadata.
 - Source builds: supported through Node.js, Rust, and Tauri prerequisites.
 - Scope: Codex clone/profile/history workflows only.
+
+## Interface Preview
+
+![Codex Clone Launcher dashboard preview](docs/assets/dashboard-preview.svg)
 
 ## Features
 
@@ -82,9 +88,9 @@ Release builds must be signed with the updater private key. The public key is st
 
 Do not store updater signing keys in `.env` files.
 
-The release workflow `.github/workflows/release.yml` publishes Windows installer assets and `latest.json` when you push a tag matching `package.json`, such as `vX.Y.Z`. The app diagnoses common updater failures in the UI, including missing `latest.json`, signature/public-key mismatch, GitHub network failures, and relaunch failures after a successful install.
+The release workflow `.github/workflows/release.yml` publishes Windows NSIS installer assets and `latest.json` when you push a tag matching `package.json`, such as `vX.Y.Z`. The app diagnoses common updater failures in the UI, including missing `latest.json`, signature/public-key mismatch, GitHub network failures, and relaunch failures after a successful install.
 
-Portable `.zip` builds are useful for manual download, but they are not treated as valid automatic updater packages by default. Publish a signed NSIS `.exe` or MSI `.msi` installer for automatic updates.
+Portable `.zip` builds are useful for manual download, but they are not treated as valid automatic updater packages by default. Publish a signed NSIS `.exe` installer for automatic updates. MSI remains supported by the verification script, but the public workflow builds NSIS by default to avoid WiX-specific packaging failures on GitHub-hosted Windows runners.
 
 Typical release flow:
 

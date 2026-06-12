@@ -40,8 +40,12 @@ jobs:
           releaseBody: "Windows installer and Tauri updater metadata."
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
+          includeUpdaterJson: false
+
+      - name: Publish updater latest.json
+        run: node scripts/publish-updater-latest.cjs --owner-repo "${{ github.repository }}" --tag "${{ github.ref_name }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify updater release assets
         run: node scripts/verify-updater-release.cjs --owner-repo "${{ github.repository }}" --tag "${{ github.ref_name }}" --latest-url "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"

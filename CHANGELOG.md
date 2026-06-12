@@ -6,6 +6,13 @@ This project uses release tags such as `vX.Y.Z`. The app updater expects the
 tag version, `package.json` version, Tauri version, installer assets, signatures,
 and `latest.json` metadata to match.
 
+## 0.24.11 - 2026-06-13
+
+- Added a release workflow step that publishes `latest.json` directly from the
+  uploaded Windows installer and signature assets.
+- Kept signed NSIS installers as the public updater target and retained the
+  release verifier as the final gate.
+
 ## 0.24.10 - 2026-06-13
 
 - Switched the public release workflow to signed NSIS installers so GitHub

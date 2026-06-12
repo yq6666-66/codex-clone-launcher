@@ -70,7 +70,7 @@ function requestJson(url, token) {
   });
 }
 
-function requestText(url) {
+function requestText(url, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const request = https.get(
       url,
@@ -81,6 +81,19 @@ function requestText(url) {
         },
       },
       (response) => {
+        if (
+          response.statusCode &&
+          response.statusCode >= 300 &&
+          response.statusCode < 400 &&
+          response.headers.location
+        ) {
+          if (redirectCount >= 5) {
+            reject(new Error(`GET ${url} exceeded redirect limit`));
+            return;
+          }
+          requestText(response.headers.location, redirectCount + 1).then(resolve, reject);
+          return;
+        }
         let body = '';
         response.setEncoding('utf8');
         response.on('data', (chunk) => {

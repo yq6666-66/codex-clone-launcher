@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "codex-clone-launcher"
-version = "0.24.11"
+version = "0.24.12"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

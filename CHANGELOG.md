@@ -6,6 +6,11 @@ This project uses release tags such as `vX.Y.Z`. The app updater expects the
 tag version, `package.json` version, Tauri version, installer assets, signatures,
 and `latest.json` metadata to match.
 
+## 0.24.12 - 2026-06-13
+
+- Fixed the release verifier to follow GitHub asset download redirects when
+  reading `latest.json`.
+
 ## 0.24.11 - 2026-06-13
 
 - Added a release workflow step that publishes `latest.json` directly from the

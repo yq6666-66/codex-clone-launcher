@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 const DATA_DIR: &str = ".codex_clone_launcher";
 const DEV_DATA_DIR: &str = ".codex_clone_launcher_dev";
-const DATA_DIR_ENV: &str = "COCKPIT_TOOLS_DATA_DIR";
-const PROFILE_ENV: &str = "COCKPIT_TOOLS_PROFILE";
+const DATA_DIR_ENV: &str = "CODEX_CLONE_DATA_DIR";
+const PROFILE_ENV: &str = "CODEX_CLONE_PROFILE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

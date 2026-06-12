@@ -1,0 +1,111 @@
+name: Bug report
+description: Report a reproducible problem in the Windows/Tauri desktop app.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        Do not upload secrets or raw auth material. Before pasting commands, logs, screenshots, or config snippets, redact API keys, OAuth codes, access/refresh tokens, cookies, account identifiers, `auth.json`, `credentials`, `sessions`, and any credential store exports.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and did not find a matching report.
+          required: true
+        - label: I removed or redacted secrets, auth files, credentials, session data, tokens, and account identifiers.
+          required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Include the version shown in the app, installer, or release page.
+      placeholder: "v0.0.0"
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 23H2, x64"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install or run method
+      options:
+        - Installer
+        - Portable package
+        - Built from source
+        - Development mode
+        - Other or unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      options:
+        - Desktop UI
+        - Tauri/Rust backend
+        - Codex account or auth flow
+        - Instance or workspace management
+        - Update or release flow
+        - Build or packaging
+        - Other or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable reproduction you have.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe what happened instead, including any user-facing error text.
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run
+      description: Paste relevant commands exactly, but redact user names, private paths, tokens, and account identifiers where needed.
+      render: powershell
+      placeholder: |
+        npm run tauri dev
+        cargo test
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or crash output
+      description: Paste only the relevant excerpt. Redact secrets, raw `auth.json`, `credentials`, `sessions`, tokens, cookies, OAuth codes, and account identifiers before submitting.
+      render: text
+      placeholder: |
+        Paste sanitized log excerpts here.
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or screen recordings
+      description: Optional. Do not include visible tokens, account emails, API keys, local credential file contents, or private workspace paths.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Add anything else that may help narrow down the issue.

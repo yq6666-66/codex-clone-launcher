@@ -24,9 +24,9 @@ const runCommand = (command, args, options) => {
 
 const env = {
   ...process.env,
-  COCKPIT_TOOLS_PROFILE: process.env.COCKPIT_TOOLS_PROFILE || 'dev',
-  COCKPIT_TOOLS_API_PORT: process.env.COCKPIT_TOOLS_API_PORT || '1456',
-  VITE_COCKPIT_TOOLS_PROFILE: process.env.VITE_COCKPIT_TOOLS_PROFILE || 'dev',
+  CODEX_CLONE_PROFILE: process.env.CODEX_CLONE_PROFILE || 'dev',
+  CODEX_CLONE_API_PORT: process.env.CODEX_CLONE_API_PORT || '1456',
+  VITE_CODEX_CLONE_PROFILE: process.env.VITE_CODEX_CLONE_PROFILE || 'dev',
 };
 const extraArgs = process.argv.slice(2);
 

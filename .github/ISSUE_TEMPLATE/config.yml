@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/yq6666-66/codex-clone-launcher/blob/main/docs/codex-clone-launcher.md
+    about: Read the product guide and troubleshooting notes before opening an issue.
+

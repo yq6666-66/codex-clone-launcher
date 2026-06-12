@@ -31,6 +31,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/48x48.png",
       "icons/32x32.png",
@@ -44,6 +45,14 @@
     ],
     "resources": {
       "../src/assets/icons/codex.svg": "native-menu-icons/codex.svg"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBERDY0QTVBQTkwRTY0REYKUldUZlpBNnBXa3JXRFlnczczRkFSWHFrYnV0T3RoQ2NJSmEyd0NtLzlCdnNUSkY0dmgzaVVpQVQK",
+      "endpoints": [
+        "https://github.com/yq6666-66/codex-clone-launcher/releases/latest/download/latest.json"
+      ]
     }
   }
 }

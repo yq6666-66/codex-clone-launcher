@@ -1,8 +1,25 @@
 {
   "name": "codex-clone-launcher",
   "private": false,
+  "description": "Tauri desktop launcher for isolated Codex Desktop clones with explicit sync-package repair.",
   "version": "0.24.7",
   "license": "MIT",
+  "keywords": [
+    "codex",
+    "tauri",
+    "desktop",
+    "launcher",
+    "profile-manager",
+    "sync-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yq6666-66/codex-clone-launcher.git"
+  },
+  "homepage": "https://github.com/yq6666-66/codex-clone-launcher#readme",
+  "bugs": {
+    "url": "https://github.com/yq6666-66/codex-clone-launcher/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +27,7 @@
     "prebuild": "npm run typecheck",
     "build": "npm run sync-version && tsc && vite build",
     "verify": "npm run typecheck && npm run build && npm run test:rust",
+    "verify:updater-release": "node scripts/verify-updater-release.cjs",
     "test:rust": "node scripts/cargo-test-workspace.cjs",
     "preview": "vite preview",
     "pretauri:dev": "npm run typecheck",
@@ -19,21 +37,18 @@
     "sync-version": "node scripts/sync-version.js"
   },
   "dependencies": {
+    "@sentry/react": "^10.55.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-fs": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.0",
-    "blueimp-md5": "^2.19.0",
     "clsx": "^2.1.1",
     "daisyui": "^5.5.14",
     "date-fns": "^4.1.0",
     "i18next": "^25.7.4",
-    "jsqr": "^1.4.0",
     "lucide-react": "^0.562.0",
-    "otpauth": "^9.5.0",
-    "otplib": "^13.4.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-i18next": "^16.5.3",
@@ -42,8 +57,6 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
-    "@types/blueimp-md5": "^2.18.2",
-    "@types/otplib": "^7.0.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
@@ -56,5 +69,8 @@
   "overrides": {
     "picomatch": "4.0.4",
     "rollup": "4.59.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

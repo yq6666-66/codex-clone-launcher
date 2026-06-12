@@ -1,0 +1,118 @@
+name: Update or release issue
+description: Report an installer, updater, packaging, or release artifact problem.
+title: "[Release]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for update failures, installer problems, release artifact issues, signing warnings, checksum mismatches, and packaging regressions.
+
+        Do not upload secrets or raw auth material. Before pasting commands, logs, screenshots, or config snippets, redact API keys, OAuth codes, access/refresh tokens, cookies, account identifiers, `auth.json`, `credentials`, `sessions`, and credential store exports.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I checked the release notes or existing issues for this version.
+          required: true
+        - label: I removed or redacted secrets, auth files, credentials, session data, tokens, and account identifiers.
+          required: true
+  - type: input
+    id: target-version
+    attributes:
+      label: Target release version
+      description: The version you installed, updated to, or tried to build.
+      placeholder: "v0.0.0"
+    validations:
+      required: true
+  - type: input
+    id: previous-version
+    attributes:
+      label: Previous app version
+      description: If this happened during an update, include the version you started from.
+      placeholder: "v0.0.0 or not applicable"
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 23H2, x64"
+    validations:
+      required: true
+  - type: dropdown
+    id: update-path
+    attributes:
+      label: Update or install path
+      options:
+        - In-app updater
+        - Installer from GitHub Releases
+        - Portable package
+        - Built release artifacts locally
+        - Development build
+        - Other or unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue type
+      options:
+        - Update failed
+        - Installer failed
+        - App fails to launch after update
+        - Release artifact missing or wrong
+        - Checksum or signature issue
+        - Windows security warning
+        - Regression after update
+        - Other or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps taken
+      description: Describe the exact update, install, or build steps.
+      placeholder: |
+        1. Downloaded ...
+        2. Ran ...
+        3. Saw ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include visible error messages and where they appeared.
+    validations:
+      required: true
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands run
+      description: Paste relevant commands exactly, but redact private paths, tokens, account identifiers, and credential material.
+      render: powershell
+      placeholder: |
+        npm run build
+        npm run tauri build
+  - type: textarea
+    id: logs
+    attributes:
+      label: Installer, updater, or build logs
+      description: Paste only sanitized excerpts. Never upload raw `auth.json`, `credentials`, `sessions`, tokens, cookies, OAuth codes, or credential store exports.
+      render: text
+      placeholder: |
+        Paste sanitized release/update log excerpts here.
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Release artifacts or checksums
+      description: Optional. Include public artifact names, download URLs, or checksums if relevant. Do not include signed secrets, private upload tokens, or local credential file contents.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context

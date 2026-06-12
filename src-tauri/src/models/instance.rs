@@ -24,6 +24,8 @@ pub struct InstanceProfile {
     #[serde(default)]
     pub working_dir: Option<String>,
     pub extra_args: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_script: Option<String>,
     pub bind_account_id: Option<String>,
     #[serde(default)]
     pub launch_mode: InstanceLaunchMode,
@@ -97,6 +99,8 @@ pub struct InstanceProfileView {
     pub user_data_dir: String,
     pub working_dir: Option<String>,
     pub extra_args: String,
+    #[serde(default)]
+    pub launch_script: Option<String>,
     pub bind_account_id: Option<String>,
     pub created_at: i64,
     pub last_launched_at: Option<i64>,
@@ -115,6 +119,7 @@ impl InstanceProfileView {
             user_data_dir: profile.user_data_dir,
             working_dir: profile.working_dir,
             extra_args: profile.extra_args,
+            launch_script: profile.launch_script,
             bind_account_id: profile.bind_account_id,
             created_at: profile.created_at,
             last_launched_at: profile.last_launched_at,

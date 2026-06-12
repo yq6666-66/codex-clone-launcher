@@ -62,6 +62,8 @@ pub struct CodexHistoryStatus {
     pub sync_mode: String,
     pub last_sync_at: Option<i64>,
     pub last_backup_path: Option<String>,
+    pub sync_package_applied:
+        Option<crate::modules::codex_sync_package::CodexSyncPackageAppliedMarker>,
     pub warnings: Vec<String>,
     pub checks: Vec<CodexHistoryCheck>,
 }
@@ -226,6 +228,14 @@ pub fn status_with_context(
     let session_file_count = iter_session_files(&sessions_dir).len() as i64;
     let session_index_count = count_jsonl_lines(&session_index_path);
     let (last_sync_at, last_backup_path) = read_last_summary(codex_home);
+    let sync_package_applied =
+        match crate::modules::codex_sync_package::read_applied_sync_package_marker(codex_home) {
+            Ok(marker) => marker,
+            Err(error) => {
+                warnings.push(error);
+                None
+            }
+        };
     if mismatch_count > 0 {
         warnings.push(format!(
             "{} thread metadata rows do not match current provider/model",
@@ -332,6 +342,7 @@ pub fn status_with_context(
         sync_mode: SYNC_MODE_SHARED.to_string(),
         last_sync_at,
         last_backup_path,
+        sync_package_applied,
         warnings,
         checks,
     })
@@ -653,7 +664,7 @@ fn lock_timeout() -> Duration {
 
 #[cfg(test)]
 fn lock_timeout() -> Duration {
-    std::env::var("COCKPIT_HISTORY_SYNC_TEST_LOCK_TIMEOUT_MS")
+    std::env::var("CODEX_CLONE_HISTORY_SYNC_TEST_LOCK_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_millis)
@@ -962,12 +973,11 @@ fn sync_threads_from_default(
         );
     }
 
-    let default_home = crate::modules::codex_instance::get_default_codex_home()?;
     warnings.push(format!(
-        "sync package history database missing; falling back to live Codex home: {}",
-        default_home.display()
+        "sync package history database missing; click `提取/刷新本体` before `同步/修复`: {}",
+        package_home.join(DB_FILE).display()
     ));
-    sync_threads_from_source(codex_home, &default_home, conn, columns, dry_run, warnings)
+    Ok(0)
 }
 
 fn sync_source_thread_delta(
@@ -981,11 +991,10 @@ fn sync_source_thread_delta(
         return Ok(None);
     }
     let package_home = crate::modules::codex_sync_package::package_codex_home_dir()?;
-    let source_home = if package_home.join(DB_FILE).exists() {
-        package_home
-    } else {
-        crate::modules::codex_instance::get_default_codex_home()?
-    };
+    if !package_home.join(DB_FILE).exists() {
+        return Ok(None);
+    }
+    let source_home = package_home;
     if paths_equal_or_same(codex_home, &source_home) {
         return Ok(None);
     }
@@ -1738,7 +1747,7 @@ mod tests {
     impl TempCodexHome {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "cockpit-history-sync-test-{}",
+                "codex-clone-history-sync-test-{}",
                 uuid::Uuid::new_v4()
             ));
             fs::create_dir_all(path.join(SESSIONS_DIR).join("2026").join("05")).unwrap();
@@ -1816,7 +1825,7 @@ model = "gpt-4.1"
     impl TempExternalRoot {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "cockpit-history-sync-external-{}",
+                "codex-clone-history-sync-external-{}",
                 uuid::Uuid::new_v4()
             ));
             fs::create_dir_all(path.join(ARCHIVED_SESSIONS_DIR)).unwrap();
@@ -2129,10 +2138,10 @@ model = "clone-model"
     fn profile_lock_blocks_second_writer_until_released() {
         let home = TempCodexHome::new();
         let first = acquire_profile_lock(&home.path).unwrap();
-        std::env::set_var("COCKPIT_HISTORY_SYNC_TEST_LOCK_TIMEOUT_MS", "10");
+        std::env::set_var("CODEX_CLONE_HISTORY_SYNC_TEST_LOCK_TIMEOUT_MS", "10");
 
         let error = acquire_profile_lock(&home.path).unwrap_err();
-        std::env::remove_var("COCKPIT_HISTORY_SYNC_TEST_LOCK_TIMEOUT_MS");
+        std::env::remove_var("CODEX_CLONE_HISTORY_SYNC_TEST_LOCK_TIMEOUT_MS");
 
         assert!(error.contains("history sync lock is busy"));
         drop(first);
@@ -2173,10 +2182,10 @@ model = "clone-model"
     #[test]
     #[ignore = "manual local Codex profile repair smoke test"]
     fn local_codex_history_repair_from_env() {
-        let home = std::env::var("COCKPIT_HISTORY_SYNC_REPAIR_HOME")
-            .expect("COCKPIT_HISTORY_SYNC_REPAIR_HOME is required");
+        let home = std::env::var("CODEX_CLONE_HISTORY_SYNC_REPAIR_HOME")
+            .expect("CODEX_CLONE_HISTORY_SYNC_REPAIR_HOME is required");
         let home = PathBuf::from(home);
-        let bound_account_id = std::env::var("COCKPIT_HISTORY_SYNC_BOUND_ACCOUNT_ID").ok();
+        let bound_account_id = std::env::var("CODEX_CLONE_HISTORY_SYNC_BOUND_ACCOUNT_ID").ok();
         let context = CodexHistoryContext { bound_account_id };
 
         let result = sync_to_current_provider_with_context(&home, false, Some(&context)).unwrap();

@@ -11,6 +11,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.env
+.env.*
+!.env.example
 *.local
 .gemini
 # Editor directories and files
@@ -37,6 +40,10 @@ docs/plugin-architecture-design.md
 src-tauri/arms_cache/
 arms.biz.trace.*
 codex-clone-launcher.log
+/backups/
+/release-artifacts*/
+/bootstrap.js
+/main-*.js
 auth.json
 config.toml
 state_5.sqlite
@@ -52,6 +59,7 @@ clone-history-sync-backups/
 # Swift native menu build artifacts
 src-tauri/native/macos-native-menu/.build/
 .tmp/
+tmp/
 
 # Rust
 target/
@@ -59,4 +67,3 @@ target/
 docs/plugin-architecture-proposal.md
 .aitasks
 .qoder/
-release-artifacts/

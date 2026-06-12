@@ -14,7 +14,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 fn command_trace_enabled() -> bool {
-    std::env::var("COCKPIT_COMMAND_TRACE")
+    std::env::var("CODEX_CLONE_COMMAND_TRACE")
         .ok()
         .map(|value| {
             matches!(
@@ -691,7 +691,11 @@ fn codex_extra_args_have_user_data_dir(extra_args: &[String]) -> bool {
         .any(|arg| arg == "--user-data-dir" || arg.starts_with("--user-data-dir="))
 }
 
-pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<u32, String> {
+pub fn start_codex_with_args(
+    codex_home: &str,
+    extra_args: &[String],
+    extra_env: &[(String, String)],
+) -> Result<u32, String> {
     let launch_path = resolve_codex_desktop_launch_path()?;
     let codex_home = codex_home.trim();
     if codex_home.is_empty() {
@@ -704,6 +708,11 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
 
     let mut command = Command::new(&launch_path);
     command.env("CODEX_HOME", codex_home);
+    for (key, value) in extra_env {
+        if is_allowed_clone_launch_env_key(key) && !value.trim().is_empty() {
+            command.env(key, value);
+        }
+    }
     command.args(extra_args);
 
     #[cfg(target_os = "windows")]
@@ -759,11 +768,12 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
                     }
                     thread::sleep(Duration::from_millis(250));
                 }
-                return Err(format!(
-                    "Codex clone process is running but no visible window appeared for CODEX_HOME={}. PID={}.",
+                crate::modules::logger::log_warn(&format!(
+                    "[Codex Start] clone process is running but no visible window handle was detected before timeout: codex_home={} pid={}",
                     summarize_text_for_process_log(codex_home, 120),
                     resolved_pid
                 ));
+                return Ok(resolved_pid);
             }
             #[cfg(not(target_os = "windows"))]
             return Ok(resolved_pid);
@@ -777,6 +787,15 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
     ))
 }
 
+fn is_allowed_clone_launch_env_key(key: &str) -> bool {
+    matches!(
+        key,
+        "CODEX_CLONE_LAUNCH_SCRIPT"
+            | "CODEX_PLUS_PLUS_LAUNCH_SCRIPT"
+            | "CODEX_CLONE_LAUNCH_SCRIPT_MODE"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +806,20 @@ mod tests {
             parse_extra_args(r#"--foo "bar baz" --flag"#),
             vec!["--foo", "bar baz", "--flag"]
         );
+    }
+
+    #[test]
+    fn clone_launch_env_key_allowlist_is_narrow() {
+        assert!(is_allowed_clone_launch_env_key("CODEX_CLONE_LAUNCH_SCRIPT"));
+        assert!(is_allowed_clone_launch_env_key(
+            "CODEX_PLUS_PLUS_LAUNCH_SCRIPT"
+        ));
+        assert!(is_allowed_clone_launch_env_key(
+            "CODEX_CLONE_LAUNCH_SCRIPT_MODE"
+        ));
+        assert!(!is_allowed_clone_launch_env_key("CODEX_HOME"));
+        assert!(!is_allowed_clone_launch_env_key("PATH"));
+        assert!(!is_allowed_clone_launch_env_key("CODEX_UNRELATED"));
     }
 
     #[cfg(target_os = "windows")]
@@ -802,9 +835,9 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_process_parser_extracts_user_data_dir_and_parent_owner() {
-        let output = r#"100|0|"C:\ProgramData\Codex\CodexApp\Codex.exe" --user-data-dir=C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc
-101|100|"C:\ProgramData\Codex\CodexApp\Codex.exe" --type=renderer --user-data-dir="C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc"
-102|0|"C:\ProgramData\Codex\CodexApp\Codex.exe" "--user-data-dir=C:\Users\admin\AppData\Roaming\Codex Clone"
+        let output = r#"100|0|"C:\ProgramData\Codex\CodexApp\Codex.exe" --user-data-dir=C:\Users\example\.codex_clone_launcher\instances\codex-app-data\abc
+101|100|"C:\ProgramData\Codex\CodexApp\Codex.exe" --type=renderer --user-data-dir="C:\Users\example\.codex_clone_launcher\instances\codex-app-data\abc"
+102|0|"C:\ProgramData\Codex\CodexApp\Codex.exe" "--user-data-dir=C:\Users\example\AppData\Roaming\Codex Clone"
 "#;
         assert_eq!(
             parse_windows_process_entries(output),
@@ -812,20 +845,20 @@ mod tests {
                 (
                     100,
                     Some(
-                        r#"C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc"#
+                        r#"C:\Users\example\.codex_clone_launcher\instances\codex-app-data\abc"#
                             .to_string()
                     )
                 ),
                 (
                     100,
                     Some(
-                        r#"C:\Users\admin\.codex_clone_launcher\instances\codex-app-data\abc"#
+                        r#"C:\Users\example\.codex_clone_launcher\instances\codex-app-data\abc"#
                             .to_string()
                     )
                 ),
                 (
                     102,
-                    Some(r#"C:\Users\admin\AppData\Roaming\Codex Clone"#.to_string())
+                    Some(r#"C:\Users\example\AppData\Roaming\Codex Clone"#.to_string())
                 ),
             ]
         );

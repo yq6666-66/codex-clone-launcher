@@ -24,10 +24,11 @@ static CODEX_AUTO_SWITCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 const CODEX_QUOTA_ALERT_COOLDOWN_SECONDS: i64 = 300;
 const ACCOUNT_CHECK_URL: &str = "https://chatgpt.com/backend-api/wham/accounts/check";
 const API_KEY_LOGIN_PLAN_TYPE: &str = "API_KEY";
-const COCKPIT_API_LOGIN_PLAN_TYPE: &str = "Cockpit Api";
-const COCKPIT_API_DEFAULT_ACCOUNT_NAME: &str = "Codex API";
+const MANAGED_API_LOGIN_PLAN_TYPE: &str = "Codex Clone API";
+const MANAGED_API_DEFAULT_ACCOUNT_NAME: &str = "Codex API";
 const API_KEY_EMAIL_PREFIX: &str = "api-key";
 const API_KEY_AUTH_MODE: &str = "apikey";
+const CODEX_CREDENTIALS_FILE_NAME: &str = ".credentials.json";
 const CODEX_CONFIG_FILE_NAME: &str = "config.toml";
 const CODEX_CONFIG_OPENAI_BASE_URL_KEY: &str = "openai_base_url";
 const CODEX_CONFIG_MODEL_PROVIDER_KEY: &str = "model_provider";
@@ -36,8 +37,8 @@ const CODEX_CONFIG_EXPERIMENTAL_BEARER_TOKEN_KEY: &str = "experimental_bearer_to
 const CODEX_CONFIG_MODEL_CONTEXT_WINDOW_KEY: &str = "model_context_window";
 const CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT_KEY: &str = "model_auto_compact_token_limit";
 const CODEX_DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
-const CODEX_COCKPIT_API_BASE_URL: &str = "https://chongcodex.cn/v1";
-const CODEX_COCKPIT_API_PROVIDER_ID: &str = "cockpit_api";
+const CODEX_MANAGED_API_BASE_URL: &str = "https://chongcodex.cn/v1";
+const CODEX_MANAGED_API_PROVIDER_ID: &str = "codex_clone_api";
 const CODEX_OPENAI_PROVIDER_ID: &str = "openai";
 const CODEX_RUNTIME_MODEL_PROVIDER_ID: &str = "codex_local_access";
 const CODEX_LEGACY_API_KEY_OPENAI_PROVIDER_ID: &str = "openai_api_key";
@@ -53,8 +54,8 @@ const CODEX_AUTO_SWITCH_ACCOUNT_SCOPE_SELECTED: &str = "selected_accounts";
 const DISK_FULL_ERROR_CODE: &str = "DISK_FULL";
 const CODEX_TOKEN_SOURCE_MANAGED: &str = "managed";
 const CODEX_PROACTIVE_REFRESH_INTERVAL_SECONDS: i64 = 8 * 24 * 60 * 60;
-const CODEX_AUTH_PROJECTION_FILE_NAME: &str = ".cockpit_codex_auth.json";
-const CODEX_AUTH_PROJECTION_WRITER: &str = "cockpit";
+const CODEX_AUTH_PROJECTION_FILE_NAME: &str = ".codex_clone_auth.json";
+const CODEX_AUTH_PROJECTION_WRITER: &str = "codex-clone-launcher";
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -123,14 +124,18 @@ fn normalize_api_base_url_for_match(raw: Option<&str>) -> Option<String> {
     Some(format!("{}://{}{}{}", parsed.scheme(), host, port, path).to_ascii_lowercase())
 }
 
-fn is_cockpit_api_base_url(raw: Option<&str>) -> bool {
+fn is_managed_api_base_url(raw: Option<&str>) -> bool {
     let Some(actual) = normalize_api_base_url_for_match(raw) else {
         return false;
     };
-    let Some(expected) = normalize_api_base_url_for_match(Some(CODEX_COCKPIT_API_BASE_URL)) else {
+    let Some(expected) = normalize_api_base_url_for_match(Some(CODEX_MANAGED_API_BASE_URL)) else {
         return false;
     };
     actual == expected
+}
+
+fn is_managed_api_provider_id(value: &str) -> bool {
+    value.eq_ignore_ascii_case(CODEX_MANAGED_API_PROVIDER_ID)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,14 +336,14 @@ fn apply_api_key_fields(
     api_key: &str,
     provider_config: ApiProviderConfig,
 ) {
-    let is_cockpit_api = provider_config
+    let is_managed_api = provider_config
         .provider_id
         .as_deref()
-        .map(|value| value.eq_ignore_ascii_case(CODEX_COCKPIT_API_PROVIDER_ID))
+        .map(is_managed_api_provider_id)
         .unwrap_or(false)
-        || is_cockpit_api_base_url(provider_config.base_url.as_deref());
-    let plan_type = if is_cockpit_api {
-        COCKPIT_API_LOGIN_PLAN_TYPE
+        || is_managed_api_base_url(provider_config.base_url.as_deref());
+    let plan_type = if is_managed_api {
+        MANAGED_API_LOGIN_PLAN_TYPE
     } else {
         API_KEY_LOGIN_PLAN_TYPE
     };
@@ -350,8 +355,8 @@ fn apply_api_key_fields(
     account.api_provider_id = provider_config.provider_id;
     account.api_provider_name = provider_config.provider_name;
     account.email = build_api_key_email(api_key);
-    if is_cockpit_api && normalize_optional_ref(account.account_name.as_deref()).is_none() {
-        account.account_name = Some(COCKPIT_API_DEFAULT_ACCOUNT_NAME.to_string());
+    if is_managed_api && normalize_optional_ref(account.account_name.as_deref()).is_none() {
+        account.account_name = Some(MANAGED_API_DEFAULT_ACCOUNT_NAME.to_string());
     }
     account.plan_type = Some(plan_type.to_string());
     account.tokens = CodexTokens {
@@ -900,7 +905,7 @@ fn write_api_provider_to_config_toml(
 fn collect_managed_api_key_provider_ids() -> HashSet<String> {
     let mut ids = HashSet::from([
         CODEX_RUNTIME_MODEL_PROVIDER_ID.to_string(),
-        CODEX_COCKPIT_API_PROVIDER_ID.to_string(),
+        CODEX_MANAGED_API_PROVIDER_ID.to_string(),
         CODEX_LEGACY_API_KEY_OPENAI_PROVIDER_ID.to_string(),
     ]);
 
@@ -974,7 +979,7 @@ fn write_api_key_provider_to_config_toml(
     provider_table["name"] = value(provider_name);
     provider_table["base_url"] = value(base_url);
     provider_table["wire_api"] = value(CODEX_PROVIDER_WIRE_API);
-    provider_table["requires_openai_auth"] = value(true);
+    provider_table["requires_openai_auth"] = value(false);
     provider_table[CODEX_CONFIG_EXPERIMENTAL_BEARER_TOKEN_KEY] = value(bearer_token);
     provider_table["supports_websockets"] = value(false);
 
@@ -2781,7 +2786,7 @@ pub fn sync_managed_projection_from_auth_dir(
     base_dir: &Path,
 ) -> Result<CodexAccount, String> {
     let projection = read_managed_projection_from_dir(base_dir)
-        .ok_or_else(|| "目标目录不是 Cockpit 受管 Codex 投影，已拒绝反向同步".to_string())?;
+        .ok_or_else(|| "目标目录不是 Codex Clone Launcher 受管 Codex 投影，已拒绝反向同步".to_string())?;
     if projection.account_id != account_id {
         return Err(format!(
             "受管投影账号不匹配: expected={}, actual={}",
@@ -3129,6 +3134,10 @@ pub fn write_auth_file_to_dir(base_dir: &Path, account: &CodexAccount) -> Result
         auth_path.display()
     ));
 
+    if account.is_api_key_auth() {
+        remove_stale_codex_credentials_file(base_dir)?;
+    }
+
     let auth_file = build_auth_file_value(account)?;
     let content =
         serde_json::to_string_pretty(&auth_file).map_err(|e| format!("序列化失败: {}", e))?;
@@ -3170,6 +3179,25 @@ pub fn write_auth_file_to_dir(base_dir: &Path, account: &CodexAccount) -> Result
     ));
 
     Ok(())
+}
+
+fn remove_stale_codex_credentials_file(base_dir: &Path) -> Result<(), String> {
+    let credentials_path = base_dir.join(CODEX_CREDENTIALS_FILE_NAME);
+    match fs::remove_file(&credentials_path) {
+        Ok(()) => {
+            logger::log_info(&format!(
+                "[Codex切号] 已移除旧 .credentials.json: {}",
+                credentials_path.display()
+            ));
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "移除旧 .credentials.json 失败: path={}, error={}",
+            credentials_path.display(),
+            error
+        )),
+    }
 }
 
 fn resolve_account_for_bundle_write(
@@ -4696,8 +4724,8 @@ mod tests {
         sync_managed_projection_from_auth_dir, upsert_account_from_access_token,
         upsert_account_from_auth_tokens, validate_api_key_credentials,
         write_api_key_provider_to_config_toml, write_api_provider_to_config_toml,
-        write_managed_projection_to_dir, write_quick_config_to_config_toml, ApiProviderConfig,
-        CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
+        write_auth_file_to_dir, write_managed_projection_to_dir, write_quick_config_to_config_toml,
+        ApiProviderConfig, CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
         CodexJsonImportCandidate, LocalCodexOAuthSnapshot, CODEX_AUTO_COMPACT_DEFAULT_LIMIT,
         CODEX_CONTEXT_WINDOW_1M_VALUE,
     };
@@ -5688,8 +5716,8 @@ wire_api = "responses"
 requires_openai_auth = true
 experimental_bearer_token = "sk-history"
 
-[model_providers.cockpit_api]
-name = "Cockpit Api"
+[model_providers.codex_clone_api]
+name = "Codex Clone API"
 base_url = "https://chongcodex.cn/v1"
 wire_api = "responses"
 requires_openai_auth = false
@@ -5722,7 +5750,7 @@ requires_openai_auth = false
         assert!(!content.contains("model_provider = "));
         assert!(!content.contains("[model_providers.codex_local_access]"));
         assert!(!content.contains("experimental_bearer_token = \"sk-history\""));
-        assert!(!content.contains("[model_providers.cockpit_api]"));
+        assert!(!content.contains("[model_providers.codex_clone_api]"));
         assert!(!content.contains("[model_providers.openai_api_key]"));
         assert!(content.contains("[model_providers.user_manual_provider_not_managed]"));
         assert!(!content.contains("openai_base_url"));
@@ -5798,7 +5826,7 @@ requires_openai_auth = false
         assert!(content.contains("name = \"OpenAI Official\""));
         assert!(content.contains("base_url = \"https://api.openai.com/v1\""));
         assert!(content.contains("wire_api = \"responses\""));
-        assert!(content.contains("requires_openai_auth = true"));
+        assert!(content.contains("requires_openai_auth = false"));
         assert!(content.contains("experimental_bearer_token = \"sk-test\""));
         assert!(content.contains("supports_websockets = false"));
         assert!(!content.contains("openai_base_url"));
@@ -5837,7 +5865,7 @@ requires_openai_auth = false
         assert!(content.contains("name = \"Relay\""));
         assert!(content.contains("base_url = \"https://relay.example.com/v1\""));
         assert!(content.contains("wire_api = \"responses\""));
-        assert!(content.contains("requires_openai_auth = true"));
+        assert!(content.contains("requires_openai_auth = false"));
         assert!(content.contains("experimental_bearer_token = \"sk-test\""));
         assert!(content.contains("supports_websockets = false"));
         assert!(!content.contains("openai_base_url"));
@@ -5850,6 +5878,32 @@ requires_openai_auth = false
                 provider_name: Some("Relay".to_string()),
             }
         );
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn api_key_auth_write_removes_stale_credentials_file() {
+        let base_dir = make_temp_dir("codex-api-key-removes-credentials-test");
+        fs::write(base_dir.join(".credentials.json"), r#"{"tokens":"source"}"#)
+            .expect("write old credentials");
+        let account = CodexAccount::new_api_key(
+            "api-key-account".to_string(),
+            "api@example.com".to_string(),
+            "sk-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some("https://relay.example.com/v1".to_string()),
+            Some("relay".to_string()),
+            Some("Relay".to_string()),
+        );
+
+        write_auth_file_to_dir(&base_dir, &account).expect("write api key auth");
+
+        assert!(!base_dir.join(".credentials.json").exists());
+        let auth = fs::read_to_string(base_dir.join("auth.json")).expect("read auth");
+        assert!(auth.contains(r#""auth_mode": "apikey""#));
+        let config = fs::read_to_string(base_dir.join("config.toml")).expect("read config");
+        assert!(config.contains("requires_openai_auth = false"));
 
         fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
     }

@@ -1,79 +1,173 @@
-# Codex 分身启动器
+# Codex Clone Launcher
 
-[English](README.en.md)
+Codex Clone Launcher is a small Tauri desktop app for creating isolated Codex Desktop profiles. Each clone gets its own `CODEX_HOME`, so different clones can use different accounts or quota pools while applying a manually extracted sync package when you choose to inherit local data.
 
-Codex Clone Launcher 是一款桌面应用程序，用于在同一台电脑上运行多个 Codex Desktop 克隆版本。每个克隆版本都使用自己独立的 `CODEX_HOME`，因此不同克隆可以使用不同账号或配额池；同时，在选择继承数据时，应用仍然可以把本地 Codex 对话、记忆、索引和常用本地能力同步到克隆版本中。
+## Project Status
 
-简而言之：保持 Codex 账号和使用配额彼此独立，同时允许克隆之间访问有用的本地历史记录。
+- Primary target: Windows desktop.
+- Release channel: GitHub Releases with Tauri updater metadata.
+- Source builds: supported through Node.js, Rust, and Tauri prerequisites.
+- Scope: Codex clone/profile/history workflows only.
 
-![Codex 分身启动器界面](docs/images/codex-clone-launcher-v0.24.8.png)
+## Features
 
-## 下载
+- Create, launch, stop, and delete Codex Desktop clones.
+- Keep each clone in an isolated `CODEX_HOME`.
+- Manually extract a local Codex sync package before applying it to clones.
+- Copy only stable local artifacts such as `sessions`, `state_5.sqlite`, `session_index.jsonl`, `memories`, `skills`, `rules`, `AGENTS.md`, and `mcp-servers`.
+- Exclude runtime state such as `auth.json`, `.credentials.json`, `plugins`, `cache`, `log`, `.tmp`, and quota configuration.
+- Back up the previous sync package before replacing it.
+- Align inherited `threads.model_provider` and `threads.model` values to the clone's current `config.toml`.
+- Update session JSONL metadata and rebuild `session_index.jsonl` so inherited conversations appear in Codex Desktop.
+- Show history health, verification, sync, and repair status in the clone list.
+- Check signed GitHub Releases from inside the app and install updates through Tauri Updater.
 
-从 [GitHub Releases](https://github.com/yq6666-66/codex-clone-launcher/releases/latest) 获取最新 Windows 和 macOS 软件包。
+## App Workflow
 
-- Windows x64 便携版：`codex-clone-launcher_0.24.8_windows_x64_portable.zip`
-- macOS 通用 DMG：`codex-clone-launcher_0.24.8_macos_universal.dmg`
+1. Open **Settings** and confirm the launch path points to the desktop `Codex.exe`.
+2. Open **Create Codex** and create a clone with either a Base URL + API Key or an official OpenAI/Codex account.
+3. Open **Codex List** and click **Extract/Refresh Source** to create the local source sync package.
+4. Click **Sync/Repair** on a clone to apply the existing sync package to that clone.
+5. Click **Verify** or **Refresh Status** to confirm history alignment before launching the clone.
+6. Use **Settings > App Update** to check GitHub Releases and install a newer signed version.
 
-说明：`v0.24.8` 是当前发布包版本；部分现成应用二进制内部仍可能显示 `0.24.7`。
+The launcher follows a conservative safety model: visual configuration, explicit manual switching, backup before replacement, and separate verification/repair steps. It stays focused on Codex clone/profile workflows.
 
-## 特征
+## Install From Source
 
-- 创建、启动、停止和删除 Codex Desktop 克隆。
-- 将每个克隆实例放在单独的 `CODEX_HOME` 中，允许使用不同账号和配额池。
-- 继承本地 Codex 数据，而不复制源身份验证密钥。
-- 复制并修复历史记录，例如 `sessions`、`state_5.sqlite`、`session_index.jsonl`、`memories` 和插件缓存。
-- 将继承的 `threads.model_provider` 与 `threads.model` 对齐到克隆当前的 `config.toml`。
-- 更新会话 JSONL 元数据并重新构建 `session_index.jsonl`，以便继承的对话显示在 Codex Desktop 中。
-- 在克隆列表中显示历史健康状况、线程数、provider/model 不匹配、验证、同步和修复状态。
-- 检测 Windows 上的 Codex Desktop，并刷新 Codex 应用服务器中克隆配置文件的元数据。
+Prerequisites:
 
-## 使用提示
+- Node.js LTS with `npm`
+- Rust stable toolchain
+- Tauri system prerequisites for your OS
 
-- 在分身里要新开一个对话；继续旧对话可能仍然使用本体会话或本体额度。
-- 如果 Codex 显示未响应，先等一会儿；系统弹窗出现时选择等待应用，不要直接关闭。
-- 加载同步包、plugins、skills 或历史数据时，应用可能短暂卡顿。
-- 如果历史、skills、MCP、plugins 或 memories 没有出现，先刷新/提取本体同步包，再执行同步/修复。
+```powershell
+git clone https://github.com/yq6666-66/codex-clone-launcher.git
+cd codex-clone-launcher
+npm ci
+npm run tauri:dev
+```
 
-## 隐私边界
+Optional local environment variables are documented in `.env.example`.
 
-应用围绕严格的隐私边界设计：历史同步不应复制身份验证密钥。本仓库只包含源代码。不要提交本地运行数据，包括：
+Build the desktop app:
+
+```powershell
+npm run tauri -- build
+```
+
+On Windows, you can create a desktop shortcut for a source checkout:
+
+```powershell
+.\scripts\create-windows-shortcut.ps1
+```
+
+The shortcut runs `scripts\start-codex-clone-launcher.ps1`, which installs dependencies when needed, rebuilds the release executable when sources are newer than the local build stamp, and starts `target\release\codex-clone-launcher.exe`.
+
+## In-App Updates
+
+The app uses Tauri Updater with a build-time generated GitHub Releases endpoint. `npm run sync-version` writes both `src-tauri/tauri.conf.json` and `src/generated/updater.ts` before production builds.
+
+Endpoint resolution order:
+
+1. `UPDATER_ENDPOINT`, when you need to use a fully custom `latest.json` URL.
+2. `UPDATER_OWNER_REPO`, for example `your-name/codex-clone-launcher`.
+3. GitHub Actions `GITHUB_REPOSITORY`.
+4. `package.json` `repository.url`.
+5. The upstream default repository.
+
+For a fork, set `UPDATER_OWNER_REPO` in CI or update `package.json` repository metadata so the built app checks your own GitHub Releases instead of the upstream project.
+
+Release builds must be signed with the updater private key. The public key is stored in `src-tauri/tauri.conf.json`; keep the private key out of git and add it to GitHub Actions as `TAURI_SIGNING_PRIVATE_KEY`. If the key has a password, add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+Do not store updater signing keys in `.env` files.
+
+The release workflow `.github/workflows/release.yml` publishes Windows installer assets and `latest.json` when you push a tag matching `package.json`, such as `vX.Y.Z`. The app diagnoses common updater failures in the UI, including missing `latest.json`, signature/public-key mismatch, GitHub network failures, and relaunch failures after a successful install.
+
+Portable `.zip` builds are useful for manual download, but they are not treated as valid automatic updater packages by default. Publish a signed NSIS `.exe` or MSI `.msi` installer for automatic updates.
+
+Typical release flow:
+
+```powershell
+npm version X.Y.Z --no-git-tag-version
+npm run sync-version
+git commit -am "chore: release vX.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+```
+
+Before treating a GitHub Release as updater-ready, run:
+
+```powershell
+npm run verify:updater-release -- --owner-repo your-name/codex-clone-launcher --tag vX.Y.Z
+```
+
+This fails fast if the release is missing `latest.json`, a Windows platform URL, an updater signature, or an installer asset suitable for Tauri Updater.
+
+Optional production telemetry is disabled unless `VITE_SENTRY_DSN` is set. Configure these GitHub Actions secrets/variables only for public release builds that should report updater/UI errors:
+
+- `VITE_SENTRY_DSN`
+- `VITE_SENTRY_RELEASE`, or let the workflow set `codex-clone-launcher@${{ github.ref_name }}`
+
+Telemetry is not required for development or forks. Do not include API keys, OAuth tokens, `auth.json`, `.credentials.json`, raw `sessions`, or SQLite profile data in public issues.
+
+## Usage Notes
+
+- Open a new conversation inside a clone after syncing; continuing an old conversation can still use old session metadata from the source conversation.
+- During sync-package extraction, repair, skill/MCP loading, or history rebuild, the UI may pause briefly. Wait for the in-app processing notice to finish.
+- If Codex appears unresponsive during launch, wait for the system chooser dialog and select the app instead of closing it.
+- If history, skills, MCP, plugins, or memories do not appear, refresh/extract the source sync package first, then run **Sync/Repair** on the clone.
+
+## Privacy Boundary
+
+This repository is source code only. Do not commit local runtime data, including:
 
 - `auth.json`
 - `config.toml`
 - `state_5.sqlite`
 - `sessions/`
 - `memories/`
-- API keys、OAuth tokens、refresh tokens 或复制的账号数据
-- 来自真实配置文件的历史同步备份或 manifest
+- API keys, OAuth tokens, refresh tokens, or copied account data
+- `plugins/`, `cache/`, `log/`, or `.tmp/`
+- history sync backups or manifests from a real profile
 
-历史同步逻辑用于复制对话和索引数据，不用于复制源身份验证密钥。
+The history sync logic is designed to copy conversation and index artifacts without copying source authentication secrets.
 
-## 平台说明
-
-- Windows：当前发布提供 Windows x64 便携版。
-- macOS：当前发布提供 Apple Silicon 和 Intel Mac 通用 DMG。
-- macOS 包当前未使用 Apple Developer ID 公证，因此 Gatekeeper 可能要求右键点击应用并选择 `Open`。
-
-## 开发
+## Development
 
 ```powershell
 npm ci
 npm run verify
 ```
 
-以开发模式运行桌面应用：
+Run the desktop app in development mode:
 
 ```powershell
 npm run tauri:dev
 ```
 
-构建桌面应用：
+Build the desktop app:
 
 ```powershell
-npm run tauri build
+npm run tauri -- build
 ```
 
-## 许可证
+Create a shortcut somewhere else:
+
+```powershell
+.\scripts\create-windows-shortcut.ps1 -ShortcutPath "$env:USERPROFILE\Desktop\Codex Clone Launcher.lnk"
+```
+
+## Repository Map
+
+- `src`: React frontend.
+- `src-tauri`: Tauri desktop shell and Rust commands.
+- `scripts`: local build, version sync, release verification, and Windows shortcut helpers.
+- `docs`: product and operations notes.
+- `.github/workflows`: CI and release automation.
+
+See [docs/codex-clone-launcher.md](docs/codex-clone-launcher.md) for the detailed product and data-boundary guide.
+
+## License
 
 MIT

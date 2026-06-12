@@ -12,7 +12,7 @@ struct NativeMenuStrings: Codable {
     let back_to_current: String
     let switch_to_viewed: String
     let refresh: String
-    let open_cockpit_tools: String
+    let open_launcher: String
     let open_details: String
     let view_all_accounts: String
     let settings: String

@@ -1,0 +1,76 @@
+name: Feature request
+description: Suggest an improvement for the Windows/Tauri desktop app.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please keep requests focused on the user problem and expected behavior.
+
+        Do not upload secrets or raw auth material. Redact API keys, OAuth codes, access/refresh tokens, cookies, account identifiers, `auth.json`, `credentials`, `sessions`, and credential store exports from examples, logs, or screenshots.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and discussions for similar requests.
+          required: true
+        - label: I removed or redacted secrets, auth files, credentials, session data, tokens, and account identifiers.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user workflow is blocked or unnecessarily difficult?
+      placeholder: "When I ..., I need to ..., but currently ..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want to see in the app.
+    validations:
+      required: true
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      options:
+        - Desktop UI
+        - Tauri/Rust backend
+        - Codex account or auth flow
+        - Instance or workspace management
+        - Update or release flow
+        - Build or packaging
+        - Documentation
+        - Other or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention workarounds, related tools, or designs you considered.
+  - type: textarea
+    id: windows-tauri
+    attributes:
+      label: Windows/Tauri considerations
+      description: Include any expected impact on Windows permissions, paths, installers, updater behavior, tray/menu behavior, WebView2, or Tauri capabilities.
+  - type: textarea
+    id: commands
+    attributes:
+      label: Relevant commands or examples
+      description: Optional. Paste exact commands or examples, but redact private paths, tokens, account identifiers, and credential material.
+      render: powershell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Optional. Paste only sanitized excerpts and never raw `auth.json`, `credentials`, `sessions`, tokens, cookies, or OAuth codes.
+      render: text
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add screenshots, mockups, or references if useful. Redact account and credential details first.

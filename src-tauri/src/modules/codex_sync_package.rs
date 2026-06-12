@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Utc;
@@ -12,44 +12,34 @@ use toml_edit::Document;
 use crate::modules;
 
 const PACKAGE_DIR_NAME: &str = "sync-package";
+const PACKAGE_BACKUP_DIR_NAME: &str = "sync-package-backups";
 const PACKAGE_CODEX_HOME_DIR_NAME: &str = "codex-home";
 const MANIFEST_FILE_NAME: &str = "codex-sync-package-manifest.json";
+const APPLIED_MARKER_FILE_NAME: &str = "clone-sync-package-applied.json";
 
+// Keep the sync package to stable user data. Runtime caches/logs/plugin bundles
+// stay out of the package so manual refresh/apply does not copy live app state.
 const REPLACE_DIRECTORIES: &[&str] = &[
-    ".tmp",
-    "ambient-suggestions",
-    "automations",
-    "browser",
-    "cache",
-    "log",
     "mcp-servers",
     "memories",
-    "pets",
-    "plugins",
     "rules",
     "skills",
     "sqlite",
     "vendor_imports",
 ];
-const MERGE_DIRECTORIES: &[&str] = &["sessions", "archived_sessions", "history_sync_backups"];
+const MERGE_DIRECTORIES: &[&str] = &["sessions", "archived_sessions"];
 const COPY_FILES: &[&str] = &[
-    ".codex-global-state.json",
-    ".credentials.json",
-    ".personality_migration",
     "AGENTS.md",
     "external_agent_session_imports.json",
+    "goals_1.sqlite",
     "session_index.jsonl",
     "history.jsonl",
-    "installation_id",
-    "logs_2.sqlite",
-    "models_cache.json",
-    "sandbox.log",
     "state_5.sqlite",
     "transcription-history.jsonl",
-    "version.json",
 ];
+const LEGACY_CREDENTIAL_FILES: &[&str] = &[".credentials.json"];
 const CONFIG_FILE: &str = "config.toml";
-const PRESERVE_TARGET_FILES_IF_EXISTS: &[&str] = &["state_5.sqlite", "logs_2.sqlite"];
+const PRESERVE_TARGET_FILES_IF_EXISTS: &[&str] = &["state_5.sqlite"];
 const QUOTA_CONFIG_KEYS: &[&str] = &[
     "model",
     "model_provider",
@@ -57,38 +47,28 @@ const QUOTA_CONFIG_KEYS: &[&str] = &[
     "openai_base_url",
 ];
 const FRESHNESS_DIRECTORIES: &[&str] = &[
-    "ambient-suggestions",
     "archived_sessions",
-    "automations",
-    "cache",
-    "history_sync_backups",
     "mcp-servers",
     "memories",
-    "pets",
-    "plugins",
     "rules",
     "sessions",
     "skills",
-    "sqlite",
     "vendor_imports",
 ];
 const FRESHNESS_FILES: &[&str] = &[
-    ".codex-global-state.json",
-    ".credentials.json",
-    ".personality_migration",
     "AGENTS.md",
-    CONFIG_FILE,
     "external_agent_session_imports.json",
+    "goals_1.sqlite",
     "history.jsonl",
-    "installation_id",
-    "models_cache.json",
     "session_index.jsonl",
-    "state_5.sqlite",
-    "state_5.sqlite-wal",
-    "state_5.sqlite-shm",
     "transcription-history.jsonl",
-    "version.json",
 ];
+const FRESHNESS_MTIME_GRACE_MS: i64 = 2_000;
+
+// Freshness intentionally ignores volatile runtime stores such as
+// state_5.sqlite, sqlite/, and config.toml. Those files can be rewritten by a
+// running Codex app without changing the manually curated memory/skill/session
+// package, which made freshly extracted packages look stale immediately.
 
 #[derive(Debug, Clone, Default)]
 struct CopyStats {
@@ -112,8 +92,30 @@ pub struct CodexSyncPackageEntry {
     pub kind: String,
     pub status: String,
     pub bytes: u64,
+    #[serde(default)]
+    pub file_count: u64,
+    #[serde(default)]
+    pub directory_count: u64,
     pub sha256: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSyncPackageResourceSummary {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub apply_mode: String,
+    pub file_count: u64,
+    pub directory_count: u64,
+    pub bytes: u64,
+    pub paths: Vec<String>,
+    pub missing: Vec<String>,
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub items: Vec<String>,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +130,8 @@ pub struct CodexSyncPackageManifest {
     pub directory_count: u64,
     pub copied_bytes: u64,
     pub entries: Vec<CodexSyncPackageEntry>,
+    #[serde(default)]
+    pub resources: Vec<CodexSyncPackageResourceSummary>,
     pub skipped: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -145,9 +149,121 @@ pub struct CodexSyncPackageStatus {
     pub file_count: u64,
     pub directory_count: u64,
     pub copied_bytes: u64,
+    pub entries: Vec<CodexSyncPackageEntry>,
+    pub resources: Vec<CodexSyncPackageResourceSummary>,
     pub skipped: Vec<String>,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSyncPackageBackupSummary {
+    pub id: String,
+    pub backup_path: String,
+    pub package_path: String,
+    pub manifest_path: String,
+    pub backup_created_at: Option<i64>,
+    pub package_created_at: Option<i64>,
+    pub source: Option<String>,
+    pub file_count: u64,
+    pub directory_count: u64,
+    pub copied_bytes: u64,
+    pub resource_count: u64,
+    pub ready_resource_count: u64,
+    pub status: String,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSyncPackagePreflightCheck {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+    pub detail: String,
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSyncPackagePreflightReport {
+    pub checked_at: i64,
+    pub status: String,
+    pub ready_to_apply: bool,
+    pub package_path: String,
+    pub manifest_path: String,
+    pub package_created_at: Option<i64>,
+    pub source: Option<String>,
+    pub stale: bool,
+    pub entries_checked: u64,
+    pub resources_checked: u64,
+    pub error_count: u64,
+    pub warning_count: u64,
+    pub unsafe_paths: Vec<String>,
+    pub checks: Vec<CodexSyncPackagePreflightCheck>,
+}
+
+struct ResourceSpec {
+    id: &'static str,
+    label: &'static str,
+    detail: &'static str,
+    apply_mode: &'static str,
+    paths: &'static [&'static str],
+}
+
+const RESOURCE_SPECS: &[ResourceSpec] = &[
+    ResourceSpec {
+        id: "history",
+        label: "聊天历史",
+        detail: "sessions、archived_sessions、session_index、history.jsonl、state_5.sqlite",
+        apply_mode: "sessions 合并；索引/历史文件替换；已有 clone state_5.sqlite 优先保留",
+        paths: &[
+            "sessions",
+            "archived_sessions",
+            "session_index.jsonl",
+            "history.jsonl",
+            "state_5.sqlite",
+            "external_agent_session_imports.json",
+            "transcription-history.jsonl",
+        ],
+    },
+    ResourceSpec {
+        id: "skills",
+        label: "技能与规则",
+        detail: "skills、rules、AGENTS.md",
+        apply_mode: "整目录替换到分身 CODEX_HOME",
+        paths: &["skills", "rules", "AGENTS.md"],
+    },
+    ResourceSpec {
+        id: "mcp",
+        label: "MCP 配置",
+        detail: "mcp-servers 目录；config.toml 中的非账号 MCP 片段会安全合并",
+        apply_mode: "mcp-servers 替换；config.toml 安全合并",
+        paths: &["mcp-servers"],
+    },
+    ResourceSpec {
+        id: "memory",
+        label: "记忆与本地数据",
+        detail: "memories、sqlite、vendor_imports",
+        apply_mode: "整目录替换到分身 CODEX_HOME",
+        paths: &["memories", "sqlite", "vendor_imports"],
+    },
+    ResourceSpec {
+        id: "goals",
+        label: "Goals",
+        detail: "goals_1.sqlite",
+        apply_mode: "Replace the clone goals database from the extracted source snapshot",
+        paths: &["goals_1.sqlite"],
+    },
+    ResourceSpec {
+        id: "config",
+        label: "安全配置片段",
+        detail: "config.toml 会移除账号、额度、provider/model 后再进入同步包",
+        apply_mode: "只合并非账号、非额度、非 provider/model 字段",
+        paths: &[CONFIG_FILE],
+    },
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,6 +275,23 @@ pub struct CodexSyncPackageApplyResult {
     pub directory_count: u64,
     pub copied_bytes: u64,
     pub skipped: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSyncPackageAppliedMarker {
+    pub version: u32,
+    pub applied_at: i64,
+    pub package_path: String,
+    pub manifest_path: String,
+    pub package_created_at: Option<i64>,
+    pub source: Option<String>,
+    pub stale_when_applied: bool,
+    pub file_count: u64,
+    pub directory_count: u64,
+    pub copied_bytes: u64,
+    pub resources: Vec<CodexSyncPackageResourceSummary>,
     pub warnings: Vec<String>,
 }
 
@@ -178,8 +311,844 @@ fn package_codex_home_dir_for(package_root: &Path) -> PathBuf {
     package_root.join(PACKAGE_CODEX_HOME_DIR_NAME)
 }
 
+fn package_backup_root_dir_for(package_root: &Path) -> PathBuf {
+    package_root
+        .parent()
+        .map(|parent| parent.join(PACKAGE_BACKUP_DIR_NAME))
+        .unwrap_or_else(|| package_root.join(PACKAGE_BACKUP_DIR_NAME))
+}
+
 fn manifest_path_for(package_root: &Path) -> PathBuf {
     package_root.join(MANIFEST_FILE_NAME)
+}
+
+pub fn list_sync_package_backups() -> Result<Vec<CodexSyncPackageBackupSummary>, String> {
+    list_sync_package_backups_for(&package_root_dir()?)
+}
+
+fn list_sync_package_backups_for(
+    package_root: &Path,
+) -> Result<Vec<CodexSyncPackageBackupSummary>, String> {
+    let backup_root = package_backup_root_dir_for(package_root);
+    if !backup_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut backups = Vec::new();
+    for entry in fs::read_dir(&backup_root).map_err(|error| {
+        format!(
+            "read Codex sync package backup root failed ({}): {}",
+            backup_root.display(),
+            error
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "read Codex sync package backup entry failed ({}): {}",
+                backup_root.display(),
+                error
+            )
+        })?;
+        let path = entry.path();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        backups.push(sync_package_backup_summary_from_dir(&path));
+    }
+    backups.sort_by(|left, right| {
+        right
+            .backup_created_at
+            .cmp(&left.backup_created_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    Ok(backups)
+}
+
+fn sync_package_backup_summary_from_dir(backup_path: &Path) -> CodexSyncPackageBackupSummary {
+    let id = backup_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| backup_path.to_string_lossy().to_string());
+    let package_path = backup_path.join(PACKAGE_CODEX_HOME_DIR_NAME);
+    let manifest_path = backup_path.join(MANIFEST_FILE_NAME);
+    let backup_created_at = parse_sync_package_backup_id_timestamp(&id).or_else(|| {
+        backup_path
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(system_time_to_millis)
+    });
+
+    if !manifest_path.exists() {
+        return CodexSyncPackageBackupSummary {
+            id,
+            backup_path: backup_path.to_string_lossy().to_string(),
+            package_path: package_path.to_string_lossy().to_string(),
+            manifest_path: manifest_path.to_string_lossy().to_string(),
+            backup_created_at,
+            package_created_at: None,
+            source: None,
+            file_count: 0,
+            directory_count: 0,
+            copied_bytes: 0,
+            resource_count: 0,
+            ready_resource_count: 0,
+            status: "missingManifest".to_string(),
+            warnings: vec!["backup manifest is missing".to_string()],
+            error: None,
+        };
+    }
+
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("read backup manifest failed: {}", error))
+        .and_then(|content| {
+            serde_json::from_str::<CodexSyncPackageManifest>(&content)
+                .map_err(|error| format!("parse backup manifest failed: {}", error))
+        });
+
+    match manifest {
+        Ok(manifest) => {
+            let resources = if manifest.resources.is_empty() {
+                resource_summaries_from_entries(&manifest.entries, &package_path)
+            } else {
+                manifest.resources.clone()
+            };
+            let ready_resource_count = resources
+                .iter()
+                .filter(|resource| resource.status == "ready")
+                .count() as u64;
+            CodexSyncPackageBackupSummary {
+                id,
+                backup_path: backup_path.to_string_lossy().to_string(),
+                package_path: package_path.to_string_lossy().to_string(),
+                manifest_path: manifest_path.to_string_lossy().to_string(),
+                backup_created_at,
+                package_created_at: Some(manifest.created_at),
+                source: Some(manifest.source),
+                file_count: manifest.file_count,
+                directory_count: manifest.directory_count,
+                copied_bytes: manifest.copied_bytes,
+                resource_count: resources.len() as u64,
+                ready_resource_count,
+                status: "ready".to_string(),
+                warnings: manifest.warnings,
+                error: None,
+            }
+        }
+        Err(error) => CodexSyncPackageBackupSummary {
+            id,
+            backup_path: backup_path.to_string_lossy().to_string(),
+            package_path: package_path.to_string_lossy().to_string(),
+            manifest_path: manifest_path.to_string_lossy().to_string(),
+            backup_created_at,
+            package_created_at: None,
+            source: None,
+            file_count: 0,
+            directory_count: 0,
+            copied_bytes: 0,
+            resource_count: 0,
+            ready_resource_count: 0,
+            status: "error".to_string(),
+            warnings: Vec::new(),
+            error: Some(error),
+        },
+    }
+}
+
+pub fn restore_sync_package_backup(backup_id: &str) -> Result<CodexSyncPackageStatus, String> {
+    restore_sync_package_backup_for(&package_root_dir()?, backup_id)
+}
+
+fn restore_sync_package_backup_for(
+    package_root: &Path,
+    backup_id: &str,
+) -> Result<CodexSyncPackageStatus, String> {
+    let backup_id = normalize_sync_package_backup_id(backup_id)?;
+    let backup_root = package_backup_root_dir_for(package_root);
+    let backup_path = backup_root.join(&backup_id);
+    let backup_metadata = fs::symlink_metadata(&backup_path).map_err(|error| {
+        format!(
+            "read Codex sync package backup failed ({}): {}",
+            backup_path.display(),
+            error
+        )
+    })?;
+    if !backup_metadata.is_dir() || is_linked_path(&backup_path, &backup_metadata) {
+        return Err(format!(
+            "Codex sync package backup is not a regular directory: {}",
+            backup_path.display()
+        ));
+    }
+
+    let summary = sync_package_backup_summary_from_dir(&backup_path);
+    if summary.status != "ready" {
+        return Err(format!(
+            "Codex sync package backup {} is not restorable: {}",
+            backup_id,
+            summary.error.unwrap_or(summary.status)
+        ));
+    }
+
+    let backup_home = backup_path.join(PACKAGE_CODEX_HOME_DIR_NAME);
+    let backup_manifest = backup_path.join(MANIFEST_FILE_NAME);
+    if !backup_home.is_dir() || !backup_manifest.is_file() {
+        return Err(format!(
+            "Codex sync package backup {} is incomplete",
+            backup_id
+        ));
+    }
+
+    fs::create_dir_all(package_root)
+        .map_err(|error| format!("create Codex sync package root failed: {}", error))?;
+    let package_home = package_codex_home_dir_for(package_root);
+    let manifest_path = manifest_path_for(package_root);
+    let restored_over_backup =
+        backup_existing_sync_package(package_root, &package_home, &manifest_path)?;
+
+    remove_existing_path(&package_home)?;
+    remove_existing_path(&manifest_path)?;
+    copy_directory_replace(&backup_home, &package_home)
+        .map_err(|error| format!("restore Codex sync package home failed: {}", error))?;
+    copy_file_replace(&backup_manifest, &manifest_path)
+        .map_err(|error| format!("restore Codex sync package manifest failed: {}", error))?;
+
+    let mut status = status_for(package_root)?;
+    status
+        .warnings
+        .push(format!("restored sync package backup {}", backup_id));
+    if let Some(path) = restored_over_backup {
+        status.warnings.push(format!(
+            "current sync package backed up before restore to {}",
+            path.display()
+        ));
+    }
+    Ok(status)
+}
+
+fn normalize_sync_package_backup_id(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let Some(timestamp) = trimmed.strip_prefix("sync-package-") else {
+        return Err("invalid Codex sync package backup id".to_string());
+    };
+    if timestamp.is_empty() || !timestamp.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err("invalid Codex sync package backup id".to_string());
+    }
+    if parse_sync_package_backup_id_timestamp(trimmed).is_none() {
+        return Err("invalid Codex sync package backup id".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn preflight_sync_package() -> Result<CodexSyncPackagePreflightReport, String> {
+    preflight_sync_package_for(&package_root_dir()?, None)
+}
+
+fn preflight_sync_package_for(
+    package_root: &Path,
+    current_source_override: Option<&Path>,
+) -> Result<CodexSyncPackagePreflightReport, String> {
+    let package_path = package_codex_home_dir_for(package_root);
+    let manifest_path = manifest_path_for(package_root);
+    let package_present = package_path.exists() && manifest_path.exists();
+    let mut checks = Vec::new();
+    let mut package_created_at = None;
+    let mut source = None;
+    let mut stale = false;
+    let mut entries_checked = 0_u64;
+    let mut resources_checked = 0_u64;
+    let mut unsafe_paths = Vec::new();
+
+    if !package_present {
+        push_preflight_check(
+            &mut checks,
+            "package.exists",
+            "Package exists",
+            "error",
+            format!(
+                "missing package home or manifest: home={}, manifest={}",
+                package_path.display(),
+                manifest_path.display()
+            ),
+            Some("Run Extract/Refresh Source before Sync/Repair.".to_string()),
+        );
+        return Ok(finalize_preflight_report(
+            package_present,
+            &package_path,
+            &manifest_path,
+            package_created_at,
+            source,
+            stale,
+            entries_checked,
+            resources_checked,
+            unsafe_paths,
+            checks,
+        ));
+    }
+
+    push_preflight_check(
+        &mut checks,
+        "package.exists",
+        "Package exists",
+        "ok",
+        "package home and manifest are present",
+        None,
+    );
+
+    let manifest_content = match fs::read_to_string(&manifest_path) {
+        Ok(content) => content,
+        Err(error) => {
+            push_preflight_check(
+                &mut checks,
+                "manifest.read",
+                "Manifest readable",
+                "error",
+                format!("read manifest failed: {}", error),
+                Some("Extract/Refresh Source to rebuild the package manifest.".to_string()),
+            );
+            return Ok(finalize_preflight_report(
+                package_present,
+                &package_path,
+                &manifest_path,
+                package_created_at,
+                source,
+                stale,
+                entries_checked,
+                resources_checked,
+                unsafe_paths,
+                checks,
+            ));
+        }
+    };
+    push_preflight_check(
+        &mut checks,
+        "manifest.read",
+        "Manifest readable",
+        "ok",
+        "manifest JSON file can be read",
+        None,
+    );
+
+    let manifest = match serde_json::from_str::<CodexSyncPackageManifest>(&manifest_content) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            push_preflight_check(
+                &mut checks,
+                "manifest.parse",
+                "Manifest parses",
+                "error",
+                format!("parse manifest failed: {}", error),
+                Some("Extract/Refresh Source to rebuild the package manifest.".to_string()),
+            );
+            return Ok(finalize_preflight_report(
+                package_present,
+                &package_path,
+                &manifest_path,
+                package_created_at,
+                source,
+                stale,
+                entries_checked,
+                resources_checked,
+                unsafe_paths,
+                checks,
+            ));
+        }
+    };
+
+    package_created_at = Some(manifest.created_at);
+    source = Some(manifest.source.clone());
+    entries_checked = manifest.entries.len() as u64;
+    push_preflight_check(
+        &mut checks,
+        "manifest.parse",
+        "Manifest parses",
+        "ok",
+        format!("manifest contains {} entries", entries_checked),
+        None,
+    );
+
+    if manifest.version == 1 {
+        push_preflight_check(
+            &mut checks,
+            "manifest.version",
+            "Manifest version",
+            "ok",
+            "version 1 is supported",
+            None,
+        );
+    } else {
+        push_preflight_check(
+            &mut checks,
+            "manifest.version",
+            "Manifest version",
+            "warning",
+            format!("unexpected manifest version {}", manifest.version),
+            Some(
+                "Refresh the source package if this was not produced by the current app."
+                    .to_string(),
+            ),
+        );
+    }
+
+    let manifest_package_path = PathBuf::from(&manifest.package_path);
+    if paths_equal_or_same(&manifest_package_path, &package_path) {
+        push_preflight_check(
+            &mut checks,
+            "manifest.packagePath",
+            "Package path",
+            "ok",
+            "manifest package path matches this package root",
+            None,
+        );
+    } else {
+        push_preflight_check(
+            &mut checks,
+            "manifest.packagePath",
+            "Package path",
+            "warning",
+            format!(
+                "manifest package path differs: manifest={}, current={}",
+                manifest_package_path.display(),
+                package_path.display()
+            ),
+            Some("Refresh the source package to rewrite path metadata.".to_string()),
+        );
+    }
+
+    match status_from_manifest(&manifest, current_source_override) {
+        Ok(status) => {
+            stale = status.stale;
+            resources_checked = status.resources.len() as u64;
+            if status.stale {
+                push_preflight_check(
+                    &mut checks,
+                    "package.freshness",
+                    "Package freshness",
+                    "warning",
+                    "source data changed after this package was extracted",
+                    Some("Sync/Repair will apply this package; refresh source first only if you want newer source data.".to_string()),
+                );
+            } else {
+                push_preflight_check(
+                    &mut checks,
+                    "package.freshness",
+                    "Package freshness",
+                    "ok",
+                    "package source metadata is current",
+                    None,
+                );
+            }
+            add_resource_preflight_check(&mut checks, &status.resources);
+        }
+        Err(error) => push_preflight_check(
+            &mut checks,
+            "package.status",
+            "Package status",
+            "error",
+            format!("status calculation failed: {}", error),
+            Some("Extract/Refresh Source to rebuild package status metadata.".to_string()),
+        ),
+    }
+
+    add_entry_preflight_check(&mut checks, &manifest.entries, &package_path);
+
+    unsafe_paths = find_unsafe_package_paths(&package_path);
+    if unsafe_paths.is_empty() {
+        push_preflight_check(
+            &mut checks,
+            "package.boundary",
+            "Boundary scan",
+            "ok",
+            "no auth/runtime/plugin bundle paths were found in the package",
+            None,
+        );
+    } else {
+        push_preflight_check(
+            &mut checks,
+            "package.boundary",
+            "Boundary scan",
+            "error",
+            format!("unsafe package paths: {}", unsafe_paths.join(", ")),
+            Some(
+                "Extract/Refresh Source with the current whitelist before applying to clones."
+                    .to_string(),
+            ),
+        );
+    }
+
+    match unsafe_config_keys_in_package_config(&package_path.join(CONFIG_FILE)) {
+        Ok(keys) if keys.is_empty() => push_preflight_check(
+            &mut checks,
+            "config.boundary",
+            "Config boundary",
+            "ok",
+            "provider/model/quota keys are not present in package config.toml",
+            None,
+        ),
+        Ok(keys) => push_preflight_check(
+            &mut checks,
+            "config.boundary",
+            "Config boundary",
+            "error",
+            format!("unsafe config keys present: {}", keys.join(", ")),
+            Some(
+                "Extract/Refresh Source to rebuild safe config.toml before Sync/Repair."
+                    .to_string(),
+            ),
+        ),
+        Err(error) => push_preflight_check(
+            &mut checks,
+            "config.boundary",
+            "Config boundary",
+            "error",
+            error,
+            Some("Fix or refresh the package config.toml before Sync/Repair.".to_string()),
+        ),
+    }
+
+    if manifest.warnings.is_empty() && manifest.skipped.is_empty() {
+        push_preflight_check(
+            &mut checks,
+            "manifest.notes",
+            "Manifest notes",
+            "ok",
+            "no extraction warnings or skipped paths were recorded",
+            None,
+        );
+    } else {
+        push_preflight_check(
+            &mut checks,
+            "manifest.notes",
+            "Manifest notes",
+            "warning",
+            format!(
+                "{} warnings, {} skipped paths recorded",
+                manifest.warnings.len(),
+                manifest.skipped.len()
+            ),
+            Some("Review the resource list and manifest preview before Sync/Repair.".to_string()),
+        );
+    }
+
+    Ok(finalize_preflight_report(
+        package_present,
+        &package_path,
+        &manifest_path,
+        package_created_at,
+        source,
+        stale,
+        entries_checked,
+        resources_checked,
+        unsafe_paths,
+        checks,
+    ))
+}
+
+fn push_preflight_check(
+    checks: &mut Vec<CodexSyncPackagePreflightCheck>,
+    id: &str,
+    label: &str,
+    status: &str,
+    detail: impl Into<String>,
+    action: Option<String>,
+) {
+    checks.push(CodexSyncPackagePreflightCheck {
+        id: id.to_string(),
+        label: label.to_string(),
+        status: status.to_string(),
+        detail: detail.into(),
+        action,
+    });
+}
+
+fn finalize_preflight_report(
+    package_present: bool,
+    package_path: &Path,
+    manifest_path: &Path,
+    package_created_at: Option<i64>,
+    source: Option<String>,
+    stale: bool,
+    entries_checked: u64,
+    resources_checked: u64,
+    unsafe_paths: Vec<String>,
+    checks: Vec<CodexSyncPackagePreflightCheck>,
+) -> CodexSyncPackagePreflightReport {
+    let error_count = checks
+        .iter()
+        .filter(|check| check.status == "error")
+        .count() as u64;
+    let warning_count = checks
+        .iter()
+        .filter(|check| check.status == "warning")
+        .count() as u64;
+    let status = if !package_present {
+        "missing"
+    } else if error_count > 0 {
+        "error"
+    } else if warning_count > 0 {
+        "warning"
+    } else {
+        "ok"
+    };
+    CodexSyncPackagePreflightReport {
+        checked_at: Utc::now().timestamp_millis(),
+        status: status.to_string(),
+        ready_to_apply: package_present && error_count == 0,
+        package_path: package_path.to_string_lossy().to_string(),
+        manifest_path: manifest_path.to_string_lossy().to_string(),
+        package_created_at,
+        source,
+        stale,
+        entries_checked,
+        resources_checked,
+        error_count,
+        warning_count,
+        unsafe_paths,
+        checks,
+    }
+}
+
+fn add_resource_preflight_check(
+    checks: &mut Vec<CodexSyncPackagePreflightCheck>,
+    resources: &[CodexSyncPackageResourceSummary],
+) {
+    let errors: Vec<String> = resources
+        .iter()
+        .filter(|resource| resource.status == "error")
+        .map(|resource| resource.label.clone())
+        .collect();
+    let partial: Vec<String> = resources
+        .iter()
+        .filter(|resource| resource.status == "partial")
+        .map(|resource| resource.label.clone())
+        .collect();
+    let missing: Vec<String> = resources
+        .iter()
+        .filter(|resource| resource.status == "missing")
+        .map(|resource| resource.label.clone())
+        .collect();
+    if !errors.is_empty() {
+        push_preflight_check(
+            checks,
+            "resources.status",
+            "Resource status",
+            "error",
+            format!("resource extraction errors: {}", errors.join(", ")),
+            Some("Refresh source package after fixing the source resource errors.".to_string()),
+        );
+    } else if !partial.is_empty() {
+        push_preflight_check(
+            checks,
+            "resources.status",
+            "Resource status",
+            "warning",
+            format!("partially extracted resources: {}", partial.join(", ")),
+            Some("Review resource details before Sync/Repair.".to_string()),
+        );
+    } else {
+        let detail = if missing.is_empty() {
+            format!("{} resource groups are ready", resources.len())
+        } else {
+            format!(
+                "{} resource groups checked; optional/missing: {}",
+                resources.len(),
+                missing.join(", ")
+            )
+        };
+        push_preflight_check(
+            checks,
+            "resources.status",
+            "Resource status",
+            "ok",
+            detail,
+            None,
+        );
+    }
+}
+
+fn add_entry_preflight_check(
+    checks: &mut Vec<CodexSyncPackagePreflightCheck>,
+    entries: &[CodexSyncPackageEntry],
+    package_home: &Path,
+) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    for entry in entries {
+        if !is_safe_package_relative_path(&entry.path) {
+            errors.push(format!("{}: unsafe relative path", entry.path));
+            continue;
+        }
+        match entry.status.as_str() {
+            "copied" => {
+                let target = package_home.join(&entry.path);
+                match fs::symlink_metadata(&target) {
+                    Ok(metadata) => {
+                        if entry.kind == "file" && !metadata.is_file() {
+                            errors.push(format!("{}: expected file", entry.path));
+                        } else if entry.kind == "directory" && !metadata.is_dir() {
+                            errors.push(format!("{}: expected directory", entry.path));
+                        }
+                        if entry.kind == "file" {
+                            if entry.bytes != metadata.len() {
+                                warnings.push(format!(
+                                    "{}: byte count differs manifest={} actual={}",
+                                    entry.path,
+                                    entry.bytes,
+                                    metadata.len()
+                                ));
+                            }
+                            if let Some(expected_sha256) = &entry.sha256 {
+                                match sha256_file(&target) {
+                                    Ok((_, actual_sha256)) if actual_sha256 == *expected_sha256 => {
+                                    }
+                                    Ok((_, actual_sha256)) => errors.push(format!(
+                                        "{}: sha256 mismatch manifest={} actual={}",
+                                        entry.path, expected_sha256, actual_sha256
+                                    )),
+                                    Err(error) => errors.push(format!(
+                                        "{}: sha256 check failed: {}",
+                                        entry.path, error
+                                    )),
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        errors.push(format!("{}: missing copied entry: {}", entry.path, error))
+                    }
+                }
+            }
+            "missing" => {}
+            "error" => errors.push(format!(
+                "{}: extraction error{}",
+                entry.path,
+                entry
+                    .error
+                    .as_ref()
+                    .map(|error| format!(": {}", error))
+                    .unwrap_or_default()
+            )),
+            other => errors.push(format!("{}: unexpected status {}", entry.path, other)),
+        }
+    }
+
+    if !errors.is_empty() {
+        push_preflight_check(
+            checks,
+            "entries.integrity",
+            "Entry integrity",
+            "error",
+            errors.into_iter().take(6).collect::<Vec<_>>().join(" / "),
+            Some("Refresh the source package; do not apply a corrupted package.".to_string()),
+        );
+    } else if !warnings.is_empty() {
+        push_preflight_check(
+            checks,
+            "entries.integrity",
+            "Entry integrity",
+            "warning",
+            warnings.into_iter().take(6).collect::<Vec<_>>().join(" / "),
+            Some("Review byte-count drift before Sync/Repair.".to_string()),
+        );
+    } else {
+        push_preflight_check(
+            checks,
+            "entries.integrity",
+            "Entry integrity",
+            "ok",
+            format!("{} manifest entries verified", entries.len()),
+            None,
+        );
+    }
+}
+
+fn is_safe_package_relative_path(relative: &str) -> bool {
+    let path = Path::new(relative);
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
+
+fn find_unsafe_package_paths(package_home: &Path) -> Vec<String> {
+    let mut unsafe_paths = Vec::new();
+    collect_unsafe_package_paths(package_home, package_home, &mut unsafe_paths);
+    unsafe_paths.sort();
+    unsafe_paths.dedup();
+    unsafe_paths.truncate(24);
+    unsafe_paths
+}
+
+fn collect_unsafe_package_paths(root: &Path, path: &Path, unsafe_paths: &mut Vec<String>) {
+    if unsafe_paths.len() >= 24 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&entry_path) else {
+            continue;
+        };
+        if let Ok(relative) = entry_path.strip_prefix(root) {
+            let relative_text = relative.to_string_lossy().replace('\\', "/");
+            if is_unsafe_package_relative_path(&relative_text) {
+                unsafe_paths.push(relative_text);
+            }
+        }
+        if metadata.is_dir() && !is_linked_path(&entry_path, &metadata) {
+            collect_unsafe_package_paths(root, &entry_path, unsafe_paths);
+        }
+        if unsafe_paths.len() >= 24 {
+            return;
+        }
+    }
+}
+
+fn is_unsafe_package_relative_path(relative: &str) -> bool {
+    let mut parts = relative.split('/').filter(|part| !part.is_empty());
+    let first = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let name = relative
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        first.as_str(),
+        "plugins" | "cache" | "log" | "logs" | ".tmp" | "tmp"
+    ) || matches!(
+        name.as_str(),
+        "auth.json" | ".credentials.json" | "credentials.json"
+    )
+}
+
+fn unsafe_config_keys_in_package_config(config_path: &Path) -> Result<Vec<String>, String> {
+    if !config_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(config_path).map_err(|error| {
+        format!(
+            "read package config.toml failed ({}): {}",
+            config_path.display(),
+            error
+        )
+    })?;
+    let doc = content
+        .parse::<Document>()
+        .map_err(|error| format!("parse package config.toml failed: {}", error))?;
+    let mut keys = QUOTA_CONFIG_KEYS
+        .iter()
+        .filter(|key| doc.contains_key(**key))
+        .map(|key| (*key).to_string())
+        .collect::<Vec<_>>();
+    keys.sort();
+    Ok(keys)
+}
+
+fn parse_sync_package_backup_id_timestamp(id: &str) -> Option<i64> {
+    id.strip_prefix("sync-package-")?.parse::<i64>().ok()
 }
 
 pub fn status() -> Result<CodexSyncPackageStatus, String> {
@@ -187,6 +1156,13 @@ pub fn status() -> Result<CodexSyncPackageStatus, String> {
 }
 
 fn status_for(package_root: &Path) -> Result<CodexSyncPackageStatus, String> {
+    status_for_source(package_root, None)
+}
+
+fn status_for_source(
+    package_root: &Path,
+    current_source_override: Option<&Path>,
+) -> Result<CodexSyncPackageStatus, String> {
     let package_path = package_codex_home_dir_for(package_root);
     let manifest_path = manifest_path_for(package_root);
     if !package_path.exists() || !manifest_path.exists() {
@@ -201,6 +1177,8 @@ fn status_for(package_root: &Path) -> Result<CodexSyncPackageStatus, String> {
             file_count: 0,
             directory_count: 0,
             copied_bytes: 0,
+            entries: Vec::new(),
+            resources: resource_summaries_from_entries(&[], &package_path),
             skipped: Vec::new(),
             warnings: Vec::new(),
         });
@@ -215,7 +1193,7 @@ fn status_for(package_root: &Path) -> Result<CodexSyncPackageStatus, String> {
     })?;
     let manifest: CodexSyncPackageManifest = serde_json::from_str(&content)
         .map_err(|error| format!("parse Codex sync package manifest failed: {}", error))?;
-    status_from_manifest(&manifest, None)
+    status_from_manifest(&manifest, current_source_override)
 }
 
 fn status_from_manifest(
@@ -226,6 +1204,11 @@ fn status_from_manifest(
         sync_package_freshness(manifest, current_source_override);
     let mut warnings = manifest.warnings.clone();
     warnings.append(&mut freshness_warnings);
+    let resources = if manifest.resources.is_empty() {
+        resource_summaries_from_entries(&manifest.entries, Path::new(&manifest.package_path))
+    } else {
+        manifest.resources.clone()
+    };
     Ok(CodexSyncPackageStatus {
         exists: true,
         package_path: manifest.package_path.clone(),
@@ -237,6 +1220,8 @@ fn status_from_manifest(
         file_count: manifest.file_count,
         directory_count: manifest.directory_count,
         copied_bytes: manifest.copied_bytes,
+        entries: manifest.entries.clone(),
+        resources,
         skipped: manifest.skipped.clone(),
         warnings,
     })
@@ -281,10 +1266,13 @@ fn sync_package_freshness(
         }
     };
     let stale_by_time = source_modified_at
-        .map(|modified_at| modified_at > manifest.created_at)
+        .map(|modified_at| modified_at > manifest.created_at + FRESHNESS_MTIME_GRACE_MS)
         .unwrap_or(false);
     if stale_by_time {
-        warnings.push("local Codex home changed after sync package extraction".to_string());
+        warnings.push(
+            "local Codex home changed after sync package extraction; refresh the main sync package before applying it to clones"
+                .to_string(),
+        );
     }
 
     (
@@ -353,23 +1341,17 @@ pub fn ensure_sync_package() -> Result<CodexSyncPackageStatus, String> {
     require_existing_sync_package_for(&package_root_dir()?)
 }
 
-pub fn ensure_fresh_sync_package() -> Result<CodexSyncPackageStatus, String> {
-    ensure_fresh_sync_package_for(&package_root_dir()?)
-}
-
-fn ensure_fresh_sync_package_for(package_root: &Path) -> Result<CodexSyncPackageStatus, String> {
-    let current = status_for(package_root)?;
-    if current.exists && !current.stale {
-        return Ok(current);
-    }
-    let source_home = modules::codex_instance::get_default_codex_home()?;
-    extract_sync_package_from(&source_home, package_root)
-}
-
 fn require_existing_sync_package_for(
     package_root: &Path,
 ) -> Result<CodexSyncPackageStatus, String> {
-    let current = status_for(package_root)?;
+    require_existing_sync_package_for_source(package_root, None)
+}
+
+fn require_existing_sync_package_for_source(
+    package_root: &Path,
+    current_source_override: Option<&Path>,
+) -> Result<CodexSyncPackageStatus, String> {
+    let current = status_for_source(package_root, current_source_override)?;
     if current.exists {
         return Ok(current);
     }
@@ -397,6 +1379,14 @@ fn extract_sync_package_from(
 
     fs::create_dir_all(&package_root)
         .map_err(|error| format!("create Codex sync package root failed: {}", error))?;
+    if let Some(backup_path) =
+        backup_existing_sync_package(package_root, &package_home, &manifest_path)?
+    {
+        warnings.push(format!(
+            "previous sync package backed up to {}",
+            backup_path.display()
+        ));
+    }
     remove_existing_path(&package_home)?;
     fs::create_dir_all(&package_home)
         .map_err(|error| format!("create Codex sync package home failed: {}", error))?;
@@ -411,6 +1401,8 @@ fn extract_sync_package_from(
                 "directory",
                 "missing",
                 0,
+                0,
+                0,
                 None,
                 None,
             ));
@@ -424,6 +1416,8 @@ fn extract_sync_package_from(
                     "directory",
                     "copied",
                     stats.copied_bytes,
+                    stats.file_count,
+                    stats.directory_count,
                     None,
                     None,
                 ));
@@ -434,6 +1428,8 @@ fn extract_sync_package_from(
                     *relative,
                     "directory",
                     "error",
+                    0,
+                    0,
                     0,
                     None,
                     Some(error),
@@ -447,7 +1443,9 @@ fn extract_sync_package_from(
         let target = package_home.join(relative);
         if !source.exists() {
             skipped.push((*relative).to_string());
-            entries.push(package_entry(*relative, "file", "missing", 0, None, None));
+            entries.push(package_entry(
+                *relative, "file", "missing", 0, 0, 0, None, None,
+            ));
             continue;
         }
         let result = if is_probable_sqlite_database_file(&source) {
@@ -464,6 +1462,8 @@ fn extract_sync_package_from(
                     "file",
                     "copied",
                     bytes,
+                    1,
+                    0,
                     Some(sha256),
                     None,
                 ));
@@ -474,6 +1474,8 @@ fn extract_sync_package_from(
                     *relative,
                     "file",
                     "error",
+                    0,
+                    0,
                     0,
                     None,
                     Some(error),
@@ -491,13 +1493,24 @@ fn extract_sync_package_from(
                 "file",
                 "copied",
                 bytes,
+                1,
+                0,
                 Some(sha256),
                 None,
             ));
         }
         Ok(None) => {
             skipped.push(CONFIG_FILE.to_string());
-            entries.push(package_entry(CONFIG_FILE, "file", "missing", 0, None, None));
+            entries.push(package_entry(
+                CONFIG_FILE,
+                "file",
+                "missing",
+                0,
+                0,
+                0,
+                None,
+                None,
+            ));
         }
         Err(error) => {
             warnings.push(format!("safe config extract skipped: {}", error));
@@ -506,15 +1519,25 @@ fn extract_sync_package_from(
                 "file",
                 "error",
                 0,
+                0,
+                0,
                 None,
                 Some(error),
             ));
         }
     }
 
+    let now = Utc::now().timestamp_millis();
+    let created_at = sync_source_modified_at(source_home)
+        .ok()
+        .flatten()
+        .map(|source_modified_at| source_modified_at.max(now))
+        .unwrap_or(now);
+
+    let resources = resource_summaries_from_entries(&entries, &package_home);
     let manifest = CodexSyncPackageManifest {
         version: 1,
-        created_at: Utc::now().timestamp_millis(),
+        created_at,
         source: source_home.to_string_lossy().to_string(),
         package_path: package_home.to_string_lossy().to_string(),
         manifest_path: manifest_path.to_string_lossy().to_string(),
@@ -522,6 +1545,7 @@ fn extract_sync_package_from(
         directory_count: totals.directory_count,
         copied_bytes: totals.copied_bytes,
         entries,
+        resources,
         skipped,
         warnings,
     };
@@ -535,25 +1559,38 @@ fn extract_sync_package_from(
 pub fn apply_sync_package_to_home(
     target_home: &Path,
 ) -> Result<CodexSyncPackageApplyResult, String> {
-    let package = require_existing_sync_package_for(&package_root_dir()?)?;
-    let package_home = PathBuf::from(&package.package_path);
-    apply_sync_package_from(&package_home, target_home)
+    apply_sync_package_to_home_from(&package_root_dir()?, target_home)
 }
 
-pub fn refresh_and_apply_sync_package_to_home(
+fn apply_sync_package_to_home_from(
+    package_root: &Path,
     target_home: &Path,
 ) -> Result<CodexSyncPackageApplyResult, String> {
-    let package = extract_sync_package()?;
-    let package_home = PathBuf::from(&package.package_path);
-    apply_sync_package_from(&package_home, target_home)
+    apply_sync_package_to_home_from_source(package_root, target_home, None)
 }
 
-pub fn apply_fresh_sync_package_to_home(
+fn apply_sync_package_to_home_from_source(
+    package_root: &Path,
     target_home: &Path,
+    current_source_override: Option<&Path>,
 ) -> Result<CodexSyncPackageApplyResult, String> {
-    let package = ensure_fresh_sync_package()?;
+    let package = require_existing_sync_package_for_source(package_root, current_source_override)?;
     let package_home = PathBuf::from(&package.package_path);
-    apply_sync_package_from(&package_home, target_home)
+    let mut result = apply_sync_package_from(&package_home, target_home)?;
+    if package.stale {
+        result.warnings.insert(
+            0,
+            "Codex sync package was applied from the last extracted package, but the main Codex home has newer local changes. Click `提取/刷新本体` when you want clones to receive those newer changes."
+                .to_string(),
+        );
+    }
+    if let Err(error) = write_applied_sync_package_marker(target_home, &package, &result) {
+        result.warnings.push(format!(
+            "package apply marker could not be written: {}",
+            error
+        ));
+    }
+    Ok(result)
 }
 
 fn apply_sync_package_from(
@@ -573,6 +1610,21 @@ fn apply_sync_package_from(
     let mut totals = CopyStats::default();
     let mut skipped = Vec::new();
     let mut warnings = Vec::new();
+
+    for relative in LEGACY_CREDENTIAL_FILES {
+        let target = target_home.join(relative);
+        match fs::remove_file(&target) {
+            Ok(()) => skipped.push(format!(
+                "{} (removed stale inherited credentials)",
+                relative
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => warnings.push(format!(
+                "package apply could not remove stale inherited credentials {}: {}",
+                relative, error
+            )),
+        }
+    }
 
     for relative in REPLACE_DIRECTORIES {
         let source = package_home.join(relative);
@@ -681,6 +1733,8 @@ fn package_entry(
     kind: &str,
     status: &str,
     bytes: u64,
+    file_count: u64,
+    directory_count: u64,
     sha256: Option<String>,
     error: Option<String>,
 ) -> CodexSyncPackageEntry {
@@ -689,9 +1743,311 @@ fn package_entry(
         kind: kind.to_string(),
         status: status.to_string(),
         bytes,
+        file_count,
+        directory_count,
         sha256,
         error,
     }
+}
+
+fn applied_marker_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(APPLIED_MARKER_FILE_NAME)
+}
+
+fn write_applied_sync_package_marker(
+    target_home: &Path,
+    package: &CodexSyncPackageStatus,
+    apply_result: &CodexSyncPackageApplyResult,
+) -> Result<(), String> {
+    let marker = CodexSyncPackageAppliedMarker {
+        version: 1,
+        applied_at: Utc::now().timestamp_millis(),
+        package_path: package.package_path.clone(),
+        manifest_path: package.manifest_path.clone(),
+        package_created_at: package.created_at,
+        source: package.source.clone(),
+        stale_when_applied: package.stale,
+        file_count: apply_result.file_count,
+        directory_count: apply_result.directory_count,
+        copied_bytes: apply_result.copied_bytes,
+        resources: package.resources.clone(),
+        warnings: apply_result.warnings.clone(),
+    };
+    let content = serde_json::to_string_pretty(&marker)
+        .map_err(|error| format!("serialize applied sync package marker failed: {}", error))?;
+    modules::atomic_write::write_string_atomic(&applied_marker_path(target_home), &content)
+        .map_err(|error| format!("write applied sync package marker failed: {}", error))
+}
+
+pub fn read_applied_sync_package_marker(
+    codex_home: &Path,
+) -> Result<Option<CodexSyncPackageAppliedMarker>, String> {
+    let path = applied_marker_path(codex_home);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "read applied sync package marker failed ({}): {}",
+            path.display(),
+            error
+        )
+    })?;
+    serde_json::from_str::<CodexSyncPackageAppliedMarker>(&content)
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "parse applied sync package marker failed ({}): {}",
+                path.display(),
+                error
+            )
+        })
+}
+
+fn resource_summaries_from_entries(
+    entries: &[CodexSyncPackageEntry],
+    package_home: &Path,
+) -> Vec<CodexSyncPackageResourceSummary> {
+    RESOURCE_SPECS
+        .iter()
+        .map(|spec| {
+            let mut file_count = 0_u64;
+            let mut directory_count = 0_u64;
+            let mut bytes = 0_u64;
+            let mut paths = Vec::new();
+            let mut missing = Vec::new();
+            let mut errors = Vec::new();
+            let mut matched_paths = Vec::new();
+
+            for entry in entries.iter().filter(|entry| {
+                spec.paths
+                    .iter()
+                    .any(|path| entry_matches_path(entry, path))
+            }) {
+                matched_paths.push(entry.path.clone());
+                match entry.status.as_str() {
+                    "copied" => {
+                        paths.push(entry.path.clone());
+                        bytes += entry.bytes;
+                        file_count += if entry.file_count > 0 {
+                            entry.file_count
+                        } else if entry.kind == "file" {
+                            1
+                        } else {
+                            0
+                        };
+                        directory_count += if entry.directory_count > 0 {
+                            entry.directory_count
+                        } else if entry.kind == "directory" {
+                            1
+                        } else {
+                            0
+                        };
+                    }
+                    "missing" => missing.push(entry.path.clone()),
+                    "error" => errors.push(match &entry.error {
+                        Some(error) => format!("{}: {}", entry.path, error),
+                        None => entry.path.clone(),
+                    }),
+                    other => errors.push(format!("{}: unexpected status {}", entry.path, other)),
+                }
+            }
+
+            for path in spec.paths {
+                if !matched_paths
+                    .iter()
+                    .any(|matched| matched == path || matched.starts_with(&format!("{}/", path)))
+                {
+                    missing.push((*path).to_string());
+                }
+            }
+
+            let status = if !errors.is_empty() && paths.is_empty() {
+                "error"
+            } else if !errors.is_empty() {
+                "partial"
+            } else if paths.is_empty() {
+                "missing"
+            } else {
+                "ready"
+            };
+
+            CodexSyncPackageResourceSummary {
+                id: spec.id.to_string(),
+                label: spec.label.to_string(),
+                status: status.to_string(),
+                apply_mode: spec.apply_mode.to_string(),
+                file_count,
+                directory_count,
+                bytes,
+                paths,
+                missing,
+                errors,
+                items: resource_inventory_items(package_home, spec.id),
+                detail: spec.detail.to_string(),
+            }
+        })
+        .collect()
+}
+
+fn entry_matches_path(entry: &CodexSyncPackageEntry, path: &str) -> bool {
+    entry.path == path || entry.path.starts_with(&format!("{}/", path))
+}
+
+fn resource_inventory_items(package_home: &Path, resource_id: &str) -> Vec<String> {
+    let mut items = match resource_id {
+        "history" => history_inventory_items(package_home),
+        "skills" => named_directory_items(package_home, &["skills", "rules"])
+            .into_iter()
+            .chain(file_presence_items(package_home, &["AGENTS.md"]))
+            .collect(),
+        "mcp" => named_directory_items(package_home, &["mcp-servers"])
+            .into_iter()
+            .chain(config_mcp_server_items(&package_home.join(CONFIG_FILE)))
+            .collect(),
+        "memory" => named_directory_items(package_home, &["memories", "vendor_imports"])
+            .into_iter()
+            .chain(file_presence_items(
+                package_home,
+                &["memories", "sqlite", "vendor_imports"],
+            ))
+            .collect(),
+        "goals" => file_presence_items(package_home, &["goals_1.sqlite"]),
+        "config" => config_inventory_items(&package_home.join(CONFIG_FILE)),
+        _ => Vec::new(),
+    };
+    items.sort();
+    items.dedup();
+    items.truncate(12);
+    items
+}
+
+fn history_inventory_items(package_home: &Path) -> Vec<String> {
+    let mut items = Vec::new();
+    for (label, relative) in [
+        ("sessions", "sessions"),
+        ("archived", "archived_sessions"),
+        ("index", "session_index.jsonl"),
+        ("history", "history.jsonl"),
+        ("state-db", "state_5.sqlite"),
+    ] {
+        if package_home.join(relative).exists() {
+            items.push(label.to_string());
+        }
+    }
+    items
+}
+
+fn named_directory_items(package_home: &Path, relatives: &[&str]) -> Vec<String> {
+    let mut items = Vec::new();
+    for relative in relatives {
+        let dir = package_home.join(relative);
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                items.push(format!("{}/{}", relative, name));
+            }
+        }
+    }
+    items
+}
+
+fn file_presence_items(package_home: &Path, relatives: &[&str]) -> Vec<String> {
+    relatives
+        .iter()
+        .filter(|relative| package_home.join(relative).exists())
+        .map(|relative| (*relative).to_string())
+        .collect()
+}
+
+fn config_inventory_items(config_path: &Path) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(config_path) else {
+        return Vec::new();
+    };
+    let Ok(doc) = content.parse::<Document>() else {
+        return vec!["config.toml".to_string()];
+    };
+    let mut items = Vec::new();
+    for (key, item) in doc.iter() {
+        if item.is_none() {
+            continue;
+        }
+        if key == "mcp_servers" {
+            if let Some(table) = item.as_table() {
+                for (server_id, _) in table.iter() {
+                    items.push(format!("mcp:{}", server_id));
+                }
+            }
+        } else {
+            items.push(key.to_string());
+        }
+    }
+    if items.is_empty() {
+        items.push("config.toml".to_string());
+    }
+    items
+}
+
+fn config_mcp_server_items(config_path: &Path) -> Vec<String> {
+    config_inventory_items(config_path)
+        .into_iter()
+        .filter(|item| item.starts_with("mcp:"))
+        .collect()
+}
+
+fn backup_existing_sync_package(
+    package_root: &Path,
+    package_home: &Path,
+    manifest_path: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if !package_home.exists() && !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    let backup_root = package_backup_root_dir_for(package_root);
+    fs::create_dir_all(&backup_root).map_err(|error| {
+        format!(
+            "create Codex sync package backup root failed ({}): {}",
+            backup_root.display(),
+            error
+        )
+    })?;
+    let backup_path = backup_root.join(format!("sync-package-{}", Utc::now().timestamp_millis()));
+    fs::create_dir_all(&backup_path).map_err(|error| {
+        format!(
+            "create Codex sync package backup failed ({}): {}",
+            backup_path.display(),
+            error
+        )
+    })?;
+
+    if package_home.exists() {
+        copy_directory_replace(package_home, &backup_path.join(PACKAGE_CODEX_HOME_DIR_NAME))
+            .map_err(|error| {
+                format!("backup existing Codex sync package home failed: {}", error)
+            })?;
+    }
+    if manifest_path.exists() {
+        copy_file_replace(manifest_path, &backup_path.join(MANIFEST_FILE_NAME)).map_err(
+            |error| {
+                format!(
+                    "backup existing Codex sync package manifest failed: {}",
+                    error
+                )
+            },
+        )?;
+    }
+
+    Ok(Some(backup_path))
 }
 
 fn sha256_file(path: &Path) -> Result<(u64, String), String> {
@@ -1229,18 +2585,21 @@ mod tests {
                 assert!(status.exists);
                 assert!(!status.stale);
 
-                std::thread::sleep(Duration::from_millis(20));
                 fs::write(
                     source_home.join("session_index.jsonl"),
                     "{\"id\":\"one\"}\n{\"id\":\"two\"}\n",
                 )
                 .expect("update source index");
 
-                let manifest: CodexSyncPackageManifest = serde_json::from_str(
+                let mut manifest: CodexSyncPackageManifest = serde_json::from_str(
                     &fs::read_to_string(manifest_path_for(package_root))
                         .expect("read package manifest"),
                 )
                 .expect("parse package manifest");
+                let source_modified_at = sync_source_modified_at(source_home)
+                    .expect("read source mtime")
+                    .unwrap();
+                manifest.created_at = source_modified_at - FRESHNESS_MTIME_GRACE_MS - 1;
                 let status = status_from_manifest(&manifest, Some(source_home))
                     .expect("read package status");
 
@@ -1250,6 +2609,498 @@ mod tests {
                     .warnings
                     .iter()
                     .any(|item| item.contains("local Codex home changed")));
+            },
+        );
+    }
+
+    #[test]
+    fn package_status_ignores_volatile_runtime_writes_after_extract() {
+        with_temp_paths(
+            "codex-sync-package-volatile-freshness-test",
+            |source_home, _target_home, package_root| {
+                fs::write(
+                    source_home.join("session_index.jsonl"),
+                    "{\"id\":\"one\"}\n",
+                )
+                .expect("write source index");
+                fs::write(source_home.join("config.toml"), "model = \"gpt-5\"\n")
+                    .expect("write source config");
+                create_history_db(&source_home.join("state_5.sqlite"), "source");
+                fs::create_dir_all(source_home.join("sqlite")).expect("create sqlite dir");
+                fs::write(source_home.join("sqlite").join("runtime.db"), "runtime")
+                    .expect("write sqlite runtime file");
+
+                let status =
+                    extract_sync_package_from(source_home, package_root).expect("extract package");
+                assert!(status.exists);
+                assert!(!status.stale);
+
+                std::thread::sleep(Duration::from_millis(20));
+                fs::write(source_home.join("config.toml"), "model = \"gpt-5.1\"\n")
+                    .expect("update source config");
+                fs::remove_file(source_home.join("state_5.sqlite")).expect("remove old state db");
+                create_history_db(&source_home.join("state_5.sqlite"), "source-2");
+                fs::write(
+                    source_home.join("sqlite").join("runtime.db"),
+                    "runtime update",
+                )
+                .expect("update sqlite runtime file");
+
+                let manifest: CodexSyncPackageManifest = serde_json::from_str(
+                    &fs::read_to_string(manifest_path_for(package_root))
+                        .expect("read package manifest"),
+                )
+                .expect("parse package manifest");
+                let status = status_from_manifest(&manifest, Some(source_home))
+                    .expect("read package status");
+
+                assert!(!status.stale);
+                assert!(!status
+                    .warnings
+                    .iter()
+                    .any(|item| item.contains("local Codex home changed")));
+            },
+        );
+    }
+
+    #[test]
+    fn package_status_ignores_small_mtime_drift_after_extract() {
+        with_temp_paths(
+            "codex-sync-package-mtime-drift-test",
+            |source_home, _target_home, package_root| {
+                fs::write(
+                    source_home.join("session_index.jsonl"),
+                    "{\"id\":\"one\"}\n",
+                )
+                .expect("write source index");
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+                fs::write(
+                    source_home.join("session_index.jsonl"),
+                    "{\"id\":\"one\"}\n{\"id\":\"two\"}\n",
+                )
+                .expect("update source index");
+
+                let mut manifest: CodexSyncPackageManifest = serde_json::from_str(
+                    &fs::read_to_string(manifest_path_for(package_root))
+                        .expect("read package manifest"),
+                )
+                .expect("parse package manifest");
+                let source_modified_at = sync_source_modified_at(source_home)
+                    .expect("read source mtime")
+                    .unwrap();
+                manifest.created_at = source_modified_at - (FRESHNESS_MTIME_GRACE_MS / 2);
+                let status = status_from_manifest(&manifest, Some(source_home))
+                    .expect("read package status");
+
+                assert!(!status.stale);
+            },
+        );
+    }
+
+    #[test]
+    fn package_excludes_runtime_cache_and_plugin_state() {
+        with_temp_paths(
+            "codex-sync-package-runtime-exclusion-test",
+            |source_home, _target_home, package_root| {
+                for relative in [
+                    ".tmp",
+                    "ambient-suggestions",
+                    "automations",
+                    "browser",
+                    "cache",
+                    "history_sync_backups",
+                    "log",
+                    "pets",
+                    "plugins",
+                ] {
+                    let dir = source_home.join(relative);
+                    fs::create_dir_all(&dir).expect("create runtime dir");
+                    fs::write(dir.join("runtime.txt"), "runtime").expect("write runtime file");
+                }
+                for relative in [
+                    ".codex-global-state.json",
+                    ".personality_migration",
+                    "installation_id",
+                    "logs_2.sqlite",
+                    "models_cache.json",
+                    "sandbox.log",
+                    "version.json",
+                ] {
+                    fs::write(source_home.join(relative), "runtime").expect("write runtime file");
+                }
+                let skill_dir = source_home.join("skills").join("define-goal");
+                fs::create_dir_all(&skill_dir).expect("create skill dir");
+                fs::write(skill_dir.join("SKILL.md"), "# Define Goal").expect("write skill");
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+                let package_home = package_codex_home_dir_for(package_root);
+
+                assert!(package_home
+                    .join("skills")
+                    .join("define-goal")
+                    .join("SKILL.md")
+                    .exists());
+                for relative in [
+                    ".tmp",
+                    "ambient-suggestions",
+                    "automations",
+                    "browser",
+                    "cache",
+                    "history_sync_backups",
+                    "log",
+                    "pets",
+                    "plugins",
+                    ".codex-global-state.json",
+                    ".personality_migration",
+                    "installation_id",
+                    "logs_2.sqlite",
+                    "models_cache.json",
+                    "sandbox.log",
+                    "version.json",
+                ] {
+                    assert!(
+                        !package_home.join(relative).exists(),
+                        "{} should not be copied into sync package",
+                        relative
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn package_status_reports_resource_summaries() {
+        with_temp_paths(
+            "codex-sync-package-resource-summary-test",
+            |source_home, _target_home, package_root| {
+                let session_dir = source_home.join("sessions").join("2026");
+                fs::create_dir_all(&session_dir).expect("create sessions");
+                fs::write(
+                    session_dir.join("rollout-a.jsonl"),
+                    "{\"type\":\"session\"}\n",
+                )
+                .expect("write session");
+                fs::write(source_home.join("session_index.jsonl"), "{\"id\":\"a\"}\n")
+                    .expect("write index");
+
+                let skill_dir = source_home.join("skills").join("define-goal");
+                fs::create_dir_all(&skill_dir).expect("create skill dir");
+                fs::write(skill_dir.join("SKILL.md"), "# Define Goal").expect("write skill");
+                fs::write(source_home.join("AGENTS.md"), "Use Simplified Chinese")
+                    .expect("write agents");
+
+                let mcp_dir = source_home.join("mcp-servers").join("time");
+                fs::create_dir_all(&mcp_dir).expect("create mcp dir");
+                fs::write(mcp_dir.join("server.json"), "{}").expect("write mcp");
+
+                let memory_dir = source_home.join("memories");
+                fs::create_dir_all(&memory_dir).expect("create memory dir");
+                fs::write(memory_dir.join("user.md"), "memory").expect("write memory");
+                fs::write(
+                    source_home.join(CONFIG_FILE),
+                    "[mcp_servers.time]\ncommand = \"time\"\n",
+                )
+                .expect("write config");
+
+                let status =
+                    extract_sync_package_from(source_home, package_root).expect("extract package");
+                assert!(status.exists);
+                assert_eq!(status.resources.len(), RESOURCE_SPECS.len());
+
+                let history = status
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == "history")
+                    .expect("history summary");
+                assert_eq!(history.status, "ready");
+                assert!(history.file_count >= 2);
+                assert!(history.paths.iter().any(|path| path == "sessions"));
+
+                let skills = status
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == "skills")
+                    .expect("skills summary");
+                assert_eq!(skills.status, "ready");
+                assert!(skills.file_count >= 2);
+                assert!(skills.items.iter().any(|item| item == "skills/define-goal"));
+                assert!(skills.items.iter().any(|item| item == "AGENTS.md"));
+
+                let mcp = status
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == "mcp")
+                    .expect("mcp summary");
+                assert_eq!(mcp.status, "ready");
+                assert!(mcp.bytes > 0);
+                assert!(mcp.items.iter().any(|item| item == "mcp-servers/time"));
+                assert!(mcp.items.iter().any(|item| item == "mcp:time"));
+
+                let memory = status
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == "memory")
+                    .expect("memory summary");
+                assert!(memory.items.iter().any(|item| item == "memories"));
+
+                let config = status
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == "config")
+                    .expect("config summary");
+                assert!(config.items.iter().any(|item| item == "mcp:time"));
+
+                let manifest: CodexSyncPackageManifest = serde_json::from_str(
+                    &fs::read_to_string(manifest_path_for(package_root))
+                        .expect("read package manifest"),
+                )
+                .expect("parse manifest");
+                assert_eq!(manifest.resources.len(), RESOURCE_SPECS.len());
+                assert!(manifest
+                    .resources
+                    .iter()
+                    .any(|resource| resource.items.iter().any(|item| item == "mcp:time")));
+            },
+        );
+    }
+
+    #[test]
+    fn package_preflight_allows_valid_extracted_package() {
+        with_temp_paths(
+            "codex-sync-package-preflight-valid-test",
+            |source_home, _target_home, package_root| {
+                let session_dir = source_home.join("sessions").join("2026");
+                fs::create_dir_all(&session_dir).expect("create sessions");
+                fs::write(
+                    session_dir.join("rollout-a.jsonl"),
+                    "{\"type\":\"session\"}\n",
+                )
+                .expect("write session");
+                fs::write(source_home.join("session_index.jsonl"), "{\"id\":\"a\"}\n")
+                    .expect("write index");
+                fs::write(
+                    source_home.join(CONFIG_FILE),
+                    "[mcp_servers.time]\ncommand = \"time\"\n",
+                )
+                .expect("write config");
+
+                let status =
+                    extract_sync_package_from(source_home, package_root).expect("extract package");
+                let report = preflight_sync_package_for(package_root, Some(source_home))
+                    .expect("preflight package");
+
+                assert!(report.ready_to_apply);
+                assert_eq!(report.error_count, 0);
+                assert!(matches!(report.status.as_str(), "ok" | "warning"));
+                assert_eq!(report.package_created_at, status.created_at);
+                assert!(report
+                    .checks
+                    .iter()
+                    .any(|check| check.id == "entries.integrity" && check.status == "ok"));
+                assert!(report
+                    .checks
+                    .iter()
+                    .any(|check| check.id == "config.boundary" && check.status == "ok"));
+            },
+        );
+    }
+
+    #[test]
+    fn package_preflight_blocks_unsafe_runtime_paths() {
+        with_temp_paths(
+            "codex-sync-package-preflight-unsafe-test",
+            |source_home, _target_home, package_root| {
+                let memory_dir = source_home.join("memories");
+                fs::create_dir_all(&memory_dir).expect("create memory dir");
+                fs::write(memory_dir.join("user.md"), "memory").expect("write memory");
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+                let package_home = package_codex_home_dir_for(package_root);
+                fs::write(package_home.join("auth.json"), "{}").expect("write unsafe auth");
+
+                let report = preflight_sync_package_for(package_root, Some(source_home))
+                    .expect("preflight package");
+
+                assert_eq!(report.status, "error");
+                assert!(!report.ready_to_apply);
+                assert!(report.unsafe_paths.iter().any(|path| path == "auth.json"));
+                assert!(report
+                    .checks
+                    .iter()
+                    .any(|check| check.id == "package.boundary" && check.status == "error"));
+            },
+        );
+    }
+
+    #[test]
+    fn package_apply_writes_clone_applied_marker() {
+        with_temp_paths(
+            "codex-sync-package-applied-marker-test",
+            |source_home, target_home, package_root| {
+                let memory_dir = source_home.join("memories");
+                fs::create_dir_all(&memory_dir).expect("create memory dir");
+                fs::write(memory_dir.join("user.md"), "memory").expect("write memory");
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+                let apply = apply_sync_package_to_home_from_source(
+                    package_root,
+                    target_home,
+                    Some(source_home),
+                )
+                .expect("apply package");
+                assert!(apply.warnings.is_empty());
+
+                let marker = read_applied_sync_package_marker(target_home)
+                    .expect("read applied marker")
+                    .expect("marker exists");
+                assert_eq!(marker.version, 1);
+                assert_eq!(
+                    marker.package_path,
+                    package_codex_home_dir_for(package_root)
+                        .to_string_lossy()
+                        .to_string()
+                );
+                assert!(marker.applied_at > 0);
+                assert!(marker
+                    .resources
+                    .iter()
+                    .any(|resource| resource.id == "memory"));
+            },
+        );
+    }
+
+    #[test]
+    fn package_extract_backs_up_existing_package_before_replace() {
+        with_temp_paths(
+            "codex-sync-package-backup-test",
+            |source_home, _target_home, package_root| {
+                let package_home = package_codex_home_dir_for(package_root);
+                fs::create_dir_all(package_home.join("plugins")).expect("create old package dir");
+                fs::write(package_home.join("plugins").join("old.txt"), "old")
+                    .expect("write old package file");
+                fs::write(manifest_path_for(package_root), "{\"old\":true}")
+                    .expect("write old manifest");
+                let skill_dir = source_home.join("skills").join("define-goal");
+                fs::create_dir_all(&skill_dir).expect("create source skill");
+                fs::write(skill_dir.join("SKILL.md"), "# Define Goal").expect("write source skill");
+
+                let status =
+                    extract_sync_package_from(source_home, package_root).expect("extract package");
+
+                assert!(status
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("previous sync package backed up")));
+                assert!(!package_home.join("plugins").exists());
+                assert!(package_home
+                    .join("skills")
+                    .join("define-goal")
+                    .join("SKILL.md")
+                    .exists());
+
+                let backup_root = package_backup_root_dir_for(package_root);
+                let backups = fs::read_dir(&backup_root)
+                    .expect("read backups")
+                    .map(|entry| entry.expect("backup entry").path())
+                    .collect::<Vec<_>>();
+                assert_eq!(backups.len(), 1);
+                let backup = &backups[0];
+                assert!(backup
+                    .join(PACKAGE_CODEX_HOME_DIR_NAME)
+                    .join("plugins")
+                    .join("old.txt")
+                    .exists());
+                assert!(backup.join(MANIFEST_FILE_NAME).exists());
+
+                let summaries =
+                    list_sync_package_backups_for(package_root).expect("list backup summaries");
+                assert_eq!(summaries.len(), 1);
+                assert_eq!(summaries[0].status, "error");
+                assert!(summaries[0].backup_path.contains("sync-package-"));
+            },
+        );
+    }
+
+    #[test]
+    fn package_restore_backup_replaces_current_package_and_backs_up_current() {
+        with_temp_paths(
+            "codex-sync-package-restore-test",
+            |source_home, _target_home, package_root| {
+                let source_memories = source_home.join("memories");
+                fs::create_dir_all(&source_memories).expect("create source memories");
+                fs::write(source_memories.join("MEMORY.md"), "source memory v1")
+                    .expect("write v1 memory");
+
+                let first =
+                    extract_sync_package_from(source_home, package_root).expect("extract v1");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+
+                fs::write(source_memories.join("MEMORY.md"), "source memory v2")
+                    .expect("write v2 memory");
+                let second =
+                    extract_sync_package_from(source_home, package_root).expect("extract v2");
+                assert_eq!(
+                    fs::read_to_string(
+                        package_codex_home_dir_for(package_root)
+                            .join("memories")
+                            .join("MEMORY.md")
+                    )
+                    .expect("read current package memory"),
+                    "source memory v2"
+                );
+
+                let backup_id = list_sync_package_backups_for(package_root)
+                    .expect("list backups")
+                    .into_iter()
+                    .find(|backup| backup.package_created_at == first.created_at)
+                    .expect("find v1 backup")
+                    .id;
+                std::thread::sleep(std::time::Duration::from_millis(2));
+
+                let restored = restore_sync_package_backup_for(package_root, &backup_id)
+                    .expect("restore v1 backup");
+
+                assert_eq!(restored.created_at, first.created_at);
+                assert!(restored
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("restored sync package backup")));
+                assert!(restored
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("current sync package backed up")));
+                assert_eq!(
+                    fs::read_to_string(
+                        package_codex_home_dir_for(package_root)
+                            .join("memories")
+                            .join("MEMORY.md")
+                    )
+                    .expect("read restored package memory"),
+                    "source memory v1"
+                );
+
+                let backups_after =
+                    list_sync_package_backups_for(package_root).expect("list backups after");
+                assert!(backups_after
+                    .iter()
+                    .any(|backup| backup.package_created_at == second.created_at));
+            },
+        );
+    }
+
+    #[test]
+    fn package_restore_backup_rejects_invalid_backup_id() {
+        with_temp_paths(
+            "codex-sync-package-restore-invalid-test",
+            |_source_home, _target_home, package_root| {
+                let error = restore_sync_package_backup_for(package_root, "../sync-package-123")
+                    .expect_err("backup id traversal must fail");
+                assert!(error.contains("invalid Codex sync package backup id"));
+
+                let error = restore_sync_package_backup_for(package_root, "sync-package-not-ms")
+                    .expect_err("backup id suffix must be numeric");
+                assert!(error.contains("invalid Codex sync package backup id"));
             },
         );
     }
@@ -1294,6 +3145,109 @@ mod tests {
     }
 
     #[test]
+    fn package_apply_allows_stale_package_with_warning_until_refresh() {
+        with_temp_paths(
+            "codex-sync-package-stale-apply-test",
+            |source_home, target_home, package_root| {
+                let source_memories = source_home.join("memories");
+                fs::create_dir_all(&source_memories).expect("create source memories");
+                fs::write(source_memories.join("MEMORY.md"), "source memory v1")
+                    .expect("write source memory");
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+
+                fs::write(source_memories.join("MEMORY.md"), "source memory v2")
+                    .expect("update source memory");
+                let manifest_path = manifest_path_for(package_root);
+                let mut manifest: CodexSyncPackageManifest = serde_json::from_str(
+                    &fs::read_to_string(&manifest_path).expect("read package manifest"),
+                )
+                .expect("parse package manifest");
+                let source_modified_at = sync_source_modified_at(source_home)
+                    .expect("read source mtime")
+                    .unwrap();
+                manifest.created_at = source_modified_at - FRESHNESS_MTIME_GRACE_MS - 1;
+                fs::write(
+                    &manifest_path,
+                    serde_json::to_string_pretty(&manifest).expect("serialize manifest"),
+                )
+                .expect("write stale manifest");
+
+                let stale_apply = apply_sync_package_to_home_from_source(
+                    package_root,
+                    target_home,
+                    Some(source_home),
+                )
+                .expect("stale package should still apply the last extracted content");
+                assert!(stale_apply
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("last extracted package")));
+                assert_eq!(
+                    fs::read_to_string(target_home.join("memories").join("MEMORY.md"))
+                        .expect("read copied stale memory"),
+                    "source memory v1"
+                );
+
+                let status =
+                    extract_sync_package_from(source_home, package_root).expect("refresh package");
+                assert!(!status.stale);
+
+                let apply = apply_sync_package_to_home_from_source(
+                    package_root,
+                    target_home,
+                    Some(source_home),
+                )
+                .expect("apply refreshed package");
+                assert!(apply.warnings.is_empty());
+                assert_eq!(
+                    fs::read_to_string(target_home.join("memories").join("MEMORY.md"))
+                        .expect("read copied memory"),
+                    "source memory v2"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn package_apply_replaces_clone_memories_with_package_memories() {
+        with_temp_paths(
+            "codex-sync-package-memories-replace-test",
+            |source_home, target_home, package_root| {
+                let source_memories = source_home.join("memories");
+                fs::create_dir_all(&source_memories).expect("create source memories");
+                fs::write(source_memories.join("MEMORY.md"), "source memory")
+                    .expect("write source memory");
+                fs::write(source_memories.join("memory_summary.md"), "source summary")
+                    .expect("write source summary");
+
+                let target_memories = target_home.join("memories");
+                fs::create_dir_all(&target_memories).expect("create target memories");
+                fs::write(target_memories.join("old-only.md"), "stale clone memory")
+                    .expect("write stale memory");
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+                let apply =
+                    apply_sync_package_from(&package_codex_home_dir_for(package_root), target_home)
+                        .expect("apply package");
+
+                assert!(apply.warnings.is_empty());
+                assert_eq!(
+                    fs::read_to_string(target_memories.join("MEMORY.md"))
+                        .expect("read copied memory"),
+                    "source memory"
+                );
+                assert_eq!(
+                    fs::read_to_string(target_memories.join("memory_summary.md"))
+                        .expect("read copied summary"),
+                    "source summary"
+                );
+                assert!(!target_memories.join("old-only.md").exists());
+            },
+        );
+    }
+
+    #[test]
     fn package_inherits_local_capabilities_without_overwriting_clone_quota_config() {
         with_temp_paths(
             "codex-sync-package-inherit-capabilities-test",
@@ -1313,17 +3267,17 @@ web_search = true
 
 [model_providers.source-provider]
 base_url = "https://source.example.com/v1"
-experimental_bearer_token = "dummy-source-provider-token"
+experimental_bearer_token = "sk-source-provider"
 
 [mcp_servers.safe]
 command = "node"
 
 [mcp_servers.arg_secret]
 command = "node"
-args = ["server.js", "--api-key", "dummy-source-api-key"]
+args = ["server.js", "--api-key", "sk-source"]
 
 [mcp_servers.secret.env]
-OPENAI_API_KEY = "dummy-source-api-key"
+OPENAI_API_KEY = "sk-source"
 "#,
                 )
                 .expect("write source config");
@@ -1334,15 +3288,17 @@ model_provider = "clone-provider"
 
 [model_providers.clone-provider]
 base_url = "https://relay.example.com/v1"
-experimental_bearer_token = "dummy-clone-token"
+experimental_bearer_token = "sk-clone"
 "#,
                 )
                 .expect("write target config");
+                fs::write(target_home.join(".credentials.json"), r#"{"old":true}"#)
+                    .expect("write old target credentials");
 
                 extract_sync_package_from(source_home, package_root).expect("extract package");
                 let package_home = package_codex_home_dir_for(package_root);
                 assert!(!package_home.join("auth.json").exists());
-                assert!(package_home.join(".credentials.json").exists());
+                assert!(!package_home.join(".credentials.json").exists());
                 let package_config = fs::read_to_string(package_home.join("config.toml"))
                     .expect("read package config");
                 assert!(!package_config.contains("source-provider"));
@@ -1350,7 +3306,7 @@ experimental_bearer_token = "dummy-clone-token"
 
                 apply_sync_package_from(&package_home, target_home).expect("apply package");
                 assert!(!target_home.join("auth.json").exists());
-                assert!(target_home.join(".credentials.json").exists());
+                assert!(!target_home.join(".credentials.json").exists());
                 let content =
                     fs::read_to_string(target_home.join("config.toml")).expect("read config");
                 assert!(content.contains(r#"model = "clone-model""#));
@@ -1418,8 +3374,14 @@ experimental_bearer_token = "dummy-clone-token"
             |source_home, _target_home, package_root| {
                 let db_path = source_home.join("state_5.sqlite");
                 create_history_db(&db_path, "source");
+                let goals_db_path = source_home.join("goals_1.sqlite");
+                create_history_db(&goals_db_path, "goal-source");
                 fs::write(source_home.join("state_5.sqlite-wal"), "stale wal").expect("write wal");
                 fs::write(source_home.join("state_5.sqlite-shm"), "stale shm").expect("write shm");
+                fs::write(source_home.join("goals_1.sqlite-wal"), "stale goals wal")
+                    .expect("write goals wal");
+                fs::write(source_home.join("goals_1.sqlite-shm"), "stale goals shm")
+                    .expect("write goals shm");
 
                 extract_sync_package_from(source_home, package_root).expect("extract package");
                 let package_home = package_codex_home_dir_for(package_root);
@@ -1430,6 +3392,40 @@ experimental_bearer_token = "dummy-clone-token"
                 );
                 assert!(!package_home.join("state_5.sqlite-wal").exists());
                 assert!(!package_home.join("state_5.sqlite-shm").exists());
+                assert_eq!(
+                    read_sqlite_thread_ids(&package_home.join("goals_1.sqlite")),
+                    vec!["goal-source".to_string()]
+                );
+                assert!(!package_home.join("goals_1.sqlite-wal").exists());
+                assert!(!package_home.join("goals_1.sqlite-shm").exists());
+            },
+        );
+    }
+
+    #[test]
+    fn package_apply_replaces_clone_goals_database() {
+        with_temp_paths(
+            "codex-sync-package-goals-test",
+            |source_home, target_home, package_root| {
+                create_history_db(&source_home.join("goals_1.sqlite"), "source-goal");
+                create_history_db(&target_home.join("goals_1.sqlite"), "old-clone-goal");
+                fs::write(target_home.join("goals_1.sqlite-wal"), "old goals wal")
+                    .expect("write target goals wal");
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+                let apply =
+                    apply_sync_package_from(&package_codex_home_dir_for(package_root), target_home)
+                        .expect("apply package");
+
+                assert!(!apply
+                    .skipped
+                    .iter()
+                    .any(|item| item.contains("goals_1.sqlite")));
+                assert_eq!(
+                    read_sqlite_thread_ids(&target_home.join("goals_1.sqlite")),
+                    vec!["source-goal".to_string()]
+                );
+                assert!(!target_home.join("goals_1.sqlite-wal").exists());
             },
         );
     }

@@ -1,12 +1,8 @@
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
-use serde::Serialize;
-use sha2::{Digest, Sha256};
-use toml_edit::Document;
 use uuid::Uuid;
 
 use crate::models::codex::CodexAppSpeed;
@@ -24,80 +20,9 @@ const CODEX_SHARED_SKILLS_DIR_NAME: &str = "skills";
 const CODEX_SHARED_RULES_DIR_NAME: &str = "rules";
 const CODEX_SHARED_AGENTS_FILE_NAME: &str = "AGENTS.md";
 const CODEX_SHARED_VENDOR_IMPORTS_SKILLS_DIR: &str = "vendor_imports/skills";
-const CODEX_CLONE_MEMORY_MANIFEST_FILE_NAME: &str = "clone-memory-manifest.json";
+const CODEX_LAUNCH_SCRIPT_FILE_NAME: &str = "codex-clone-launch-script.js";
 #[cfg(target_os = "windows")]
 const CODEX_WINDOWS_APP_DATA_DIR_NAME: &str = "codex-app-data";
-
-const CODEX_MEMORY_DIRECTORIES: &[&str] = &[
-    "sessions",
-    "archived_sessions",
-    "mcp-servers",
-    "plugins",
-    "cache",
-    "memories",
-    "sqlite",
-    "ambient-suggestions",
-    ".tmp/plugins",
-    ".tmp/bundled-marketplaces",
-];
-
-const CODEX_MEMORY_FILES: &[&str] = &[
-    "config.toml",
-    ".credentials.json",
-    ".tmp/plugins.sha",
-    "session_index.jsonl",
-    "history.jsonl",
-    "state_5.sqlite",
-    "state_5.sqlite-wal",
-    "state_5.sqlite-shm",
-    "logs_2.sqlite",
-    "logs_2.sqlite-wal",
-    "logs_2.sqlite-shm",
-    "models_cache.json",
-    "external_agent_session_imports.json",
-    "transcription-history.jsonl",
-    ".codex-global-state.json",
-];
-
-const CODEX_LIGHTWEIGHT_PLUGIN_STATE_FILES: &[&str] = &[".credentials.json", ".tmp/plugins.sha"];
-
-const CODEX_INHERITED_CONFIG_TABLES: &[&str] = &[
-    "features",
-    "notice",
-    "marketplaces",
-    "mcp_servers",
-    "memories",
-    "plugins",
-    "projects",
-    "shell_environment_policy",
-];
-
-const CODEX_SHARED_MEMORY_ITEMS: &[&str] = &[
-    CODEX_SHARED_SKILLS_DIR_NAME,
-    CODEX_SHARED_RULES_DIR_NAME,
-    CODEX_SHARED_VENDOR_IMPORTS_SKILLS_DIR,
-    CODEX_SHARED_AGENTS_FILE_NAME,
-];
-
-#[derive(Debug, Serialize)]
-struct MemoryInheritanceEntry {
-    path: String,
-    kind: String,
-    status: String,
-    bytes: u64,
-    sha256: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MemoryInheritanceManifest {
-    version: u32,
-    created_at: i64,
-    source: String,
-    target: String,
-    entries: Vec<MemoryInheritanceEntry>,
-}
 
 pub fn is_api_service_bind_account_id(account_id: &str) -> bool {
     account_id.trim() == CODEX_API_SERVICE_BIND_ACCOUNT_ID
@@ -109,6 +34,7 @@ pub struct CreateInstanceParams {
     pub user_data_dir: String,
     pub working_dir: Option<String>,
     pub extra_args: String,
+    pub launch_script: Option<String>,
     pub bind_account_id: Option<String>,
     pub copy_source_instance_id: Option<String>,
     pub init_mode: Option<String>,
@@ -122,6 +48,7 @@ pub struct UpdateInstanceParams {
     pub name: Option<String>,
     pub working_dir: Option<String>,
     pub extra_args: Option<String>,
+    pub launch_script: Option<Option<String>>,
     pub bind_account_id: Option<Option<String>>,
     pub launch_mode: Option<InstanceLaunchMode>,
     pub app_speed: Option<CodexAppSpeed>,
@@ -865,434 +792,6 @@ pub fn ensure_instance_shared_skills(profile_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<(u64, String), String> {
-    let mut file = fs::File::open(path).map_err(|e| {
-        format!(
-            "open inherited memory file failed: {}: {}",
-            path.display(),
-            e
-        )
-    })?;
-    let mut hasher = Sha256::new();
-    let mut total = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-
-    loop {
-        let read = file.read(&mut buffer).map_err(|e| {
-            format!(
-                "read inherited memory file failed: {}: {}",
-                path.display(),
-                e
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-        total += read as u64;
-    }
-
-    Ok((total, format!("{:x}", hasher.finalize())))
-}
-
-fn remove_existing_memory_target(path: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let metadata = fs::symlink_metadata(path).map_err(|e| {
-        format!(
-            "read memory target metadata failed: {}: {}",
-            path.display(),
-            e
-        )
-    })?;
-    if metadata.file_type().is_symlink() || metadata.is_file() {
-        fs::remove_file(path).map_err(|e| {
-            format!(
-                "remove memory target file failed: {}: {}",
-                path.display(),
-                e
-            )
-        })
-    } else if metadata.is_dir() {
-        fs::remove_dir_all(path).map_err(|e| {
-            format!(
-                "remove memory target directory failed: {}: {}",
-                path.display(),
-                e
-            )
-        })
-    } else {
-        Ok(())
-    }
-}
-
-fn copy_memory_file(source: &Path, target: &Path) -> Result<(u64, String), String> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "create inherited memory parent directory failed: {}: {}",
-                parent.display(),
-                e
-            )
-        })?;
-    }
-    remove_existing_memory_target(target)?;
-    fs::copy(source, target).map_err(|e| {
-        format!(
-            "copy inherited memory file failed: {} -> {}: {}",
-            source.display(),
-            target.display(),
-            e
-        )
-    })?;
-    sha256_file(target)
-}
-
-fn copy_memory_directory_recursive(source: &Path, target: &Path) -> Result<u64, String> {
-    remove_existing_memory_target(target)?;
-    fs::create_dir_all(target).map_err(|e| {
-        format!(
-            "create inherited memory directory failed: {}: {}",
-            target.display(),
-            e
-        )
-    })?;
-
-    let mut total = 0_u64;
-    for entry in fs::read_dir(source).map_err(|e| {
-        format!(
-            "read inherited memory directory failed: {}: {}",
-            source.display(),
-            e
-        )
-    })? {
-        let entry = entry.map_err(|e| {
-            format!(
-                "read inherited memory directory entry failed: {}: {}",
-                source.display(),
-                e
-            )
-        })?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        let file_type = entry.file_type().map_err(|e| {
-            format!(
-                "read inherited memory entry type failed: {}: {}",
-                source_path.display(),
-                e
-            )
-        })?;
-
-        if file_type.is_dir() {
-            total += copy_memory_directory_recursive(&source_path, &target_path)?;
-        } else if file_type.is_file() {
-            let (bytes, _) = copy_memory_file(&source_path, &target_path)?;
-            total += bytes;
-        }
-    }
-
-    Ok(total)
-}
-
-fn memory_entry_missing(relative_path: &str, kind: &str) -> MemoryInheritanceEntry {
-    MemoryInheritanceEntry {
-        path: relative_path.to_string(),
-        kind: kind.to_string(),
-        status: "missing".to_string(),
-        bytes: 0,
-        sha256: None,
-        error: None,
-    }
-}
-
-fn memory_entry_error(relative_path: &str, kind: &str, error: String) -> MemoryInheritanceEntry {
-    MemoryInheritanceEntry {
-        path: relative_path.to_string(),
-        kind: kind.to_string(),
-        status: "error".to_string(),
-        bytes: 0,
-        sha256: None,
-        error: Some(error),
-    }
-}
-
-fn normalize_toml_path_literal(path: &Path) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        format!(r"\\?\{}", path.to_string_lossy().replace('/', "\\"))
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        path.to_string_lossy().to_string()
-    }
-}
-
-fn rewrite_inherited_config_paths(doc: &mut Document, source_home: &Path, target_home: &Path) {
-    let replacements = [
-        (
-            source_home.join(".tmp").join("plugins"),
-            target_home.join(".tmp").join("plugins"),
-        ),
-        (
-            source_home.join(".tmp").join("bundled-marketplaces"),
-            target_home.join(".tmp").join("bundled-marketplaces"),
-        ),
-        (
-            source_home.join("plugins").join("cache"),
-            target_home.join("plugins").join("cache"),
-        ),
-    ];
-
-    for (source, target) in replacements {
-        replace_toml_string_paths(
-            doc.as_item_mut(),
-            &normalize_toml_path_literal(&source),
-            &normalize_toml_path_literal(&target),
-        );
-        replace_toml_string_paths(
-            doc.as_item_mut(),
-            &source.to_string_lossy(),
-            &target.to_string_lossy(),
-        );
-    }
-}
-
-fn replace_toml_string_paths(item: &mut toml_edit::Item, source: &str, target: &str) {
-    match item {
-        toml_edit::Item::Value(value) => {
-            if let Some(text) = value.as_str() {
-                if text.contains(source) {
-                    *item = toml_edit::value(text.replace(source, target));
-                }
-            }
-        }
-        toml_edit::Item::Table(table) => {
-            for (_, child) in table.iter_mut() {
-                replace_toml_string_paths(child, source, target);
-            }
-        }
-        toml_edit::Item::ArrayOfTables(array) => {
-            for table in array.iter_mut() {
-                for (_, child) in table.iter_mut() {
-                    replace_toml_string_paths(child, source, target);
-                }
-            }
-        }
-        toml_edit::Item::None => {}
-    }
-}
-
-fn normalize_inherited_config_toml(profile_dir: &Path, source_home: &Path) -> Result<(), String> {
-    let config_path = profile_dir.join("config.toml");
-    if !config_path.exists() {
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(&config_path).map_err(|e| {
-        format!(
-            "read inherited config.toml failed: {}: {}",
-            config_path.display(),
-            e
-        )
-    })?;
-    if content.trim().is_empty() {
-        return Ok(());
-    }
-
-    let mut doc = content
-        .parse::<Document>()
-        .map_err(|e| format!("parse inherited config.toml failed: {}", e))?;
-    rewrite_inherited_config_paths(&mut doc, source_home, profile_dir);
-    let content = doc.to_string();
-    modules::atomic_write::write_string_atomic(&config_path, &content)
-        .map_err(|e| format!("write inherited config.toml failed: {}", e))
-}
-
-fn copy_lightweight_plugin_state_if_missing(profile_dir: &Path, source_home: &Path) {
-    for relative_path in CODEX_LIGHTWEIGHT_PLUGIN_STATE_FILES {
-        let source = source_home.join(relative_path);
-        let target = profile_dir.join(relative_path);
-        if !source.exists() || target.exists() {
-            continue;
-        }
-        if let Err(error) = copy_memory_file(&source, &target) {
-            modules::logger::log_warn(&format!(
-                "[Codex Memory] failed to inherit lightweight plugin state {}: {}",
-                relative_path, error
-            ));
-        }
-    }
-}
-
-fn sync_inherited_plugin_config_from_source(
-    profile_dir: &Path,
-    source_home: &Path,
-) -> Result<(), String> {
-    if paths_point_to_same_location(profile_dir, source_home) {
-        return Ok(());
-    }
-
-    fs::create_dir_all(profile_dir).map_err(|e| {
-        format!(
-            "create Codex clone home failed: {}: {}",
-            profile_dir.display(),
-            e
-        )
-    })?;
-    copy_lightweight_plugin_state_if_missing(profile_dir, source_home);
-
-    let source_config_path = source_home.join("config.toml");
-    if !source_config_path.exists() {
-        return Ok(());
-    }
-
-    let source_content = fs::read_to_string(&source_config_path).map_err(|e| {
-        format!(
-            "read source config.toml failed: {}: {}",
-            source_config_path.display(),
-            e
-        )
-    })?;
-    if source_content.trim().is_empty() {
-        return Ok(());
-    }
-
-    let mut source_doc = source_content
-        .parse::<Document>()
-        .map_err(|e| format!("parse source config.toml failed: {}", e))?;
-    rewrite_inherited_config_paths(&mut source_doc, source_home, profile_dir);
-
-    let target_config_path = profile_dir.join("config.toml");
-    let target_content = fs::read_to_string(&target_config_path).unwrap_or_default();
-    let mut target_doc = if target_content.trim().is_empty() {
-        Document::new()
-    } else {
-        target_content
-            .parse::<Document>()
-            .map_err(|e| format!("parse clone config.toml failed: {}", e))?
-    };
-
-    for key in CODEX_INHERITED_CONFIG_TABLES {
-        if let Some(item) = source_doc.get(key) {
-            target_doc[key] = item.clone();
-        } else {
-            let _ = target_doc.remove(key);
-        }
-    }
-    rewrite_inherited_config_paths(&mut target_doc, source_home, profile_dir);
-
-    let content = target_doc.to_string();
-    modules::atomic_write::write_string_atomic(&target_config_path, &content)
-        .map_err(|e| format!("write clone config.toml failed: {}", e))
-}
-
-pub fn sync_inherited_plugin_config(profile_dir: &Path) -> Result<(), String> {
-    let source_home = get_default_codex_home()?;
-    sync_inherited_plugin_config_from_source(profile_dir, &source_home)
-}
-
-pub fn inherit_local_memory_artifacts(profile_dir: &Path) -> Result<(), String> {
-    let source_home = get_default_codex_home()?;
-    if paths_point_to_same_location(profile_dir, &source_home) {
-        return Ok(());
-    }
-
-    fs::create_dir_all(profile_dir).map_err(|e| {
-        format!(
-            "create Codex clone home failed: {}: {}",
-            profile_dir.display(),
-            e
-        )
-    })?;
-
-    let mut entries = Vec::new();
-
-    for relative_path in CODEX_MEMORY_DIRECTORIES {
-        let source = source_home.join(relative_path);
-        let target = profile_dir.join(relative_path);
-        if !source.exists() {
-            entries.push(memory_entry_missing(relative_path, "directory"));
-            continue;
-        }
-        match copy_memory_directory_recursive(&source, &target) {
-            Ok(bytes) => entries.push(MemoryInheritanceEntry {
-                path: relative_path.to_string(),
-                kind: "directory".to_string(),
-                status: "copied".to_string(),
-                bytes,
-                sha256: None,
-                error: None,
-            }),
-            Err(error) => {
-                modules::logger::log_warn(&format!(
-                    "[Codex Memory] failed to inherit directory {}: {}",
-                    relative_path, error
-                ));
-                entries.push(memory_entry_error(relative_path, "directory", error));
-            }
-        }
-    }
-
-    for relative_path in CODEX_MEMORY_FILES {
-        let source = source_home.join(relative_path);
-        let target = profile_dir.join(relative_path);
-        if !source.exists() {
-            entries.push(memory_entry_missing(relative_path, "file"));
-            continue;
-        }
-        match copy_memory_file(&source, &target) {
-            Ok((bytes, sha256)) => entries.push(MemoryInheritanceEntry {
-                path: relative_path.to_string(),
-                kind: "file".to_string(),
-                status: "copied".to_string(),
-                bytes,
-                sha256: Some(sha256),
-                error: None,
-            }),
-            Err(error) => {
-                modules::logger::log_warn(&format!(
-                    "[Codex Memory] failed to inherit file {}: {}",
-                    relative_path, error
-                ));
-                entries.push(memory_entry_error(relative_path, "file", error));
-            }
-        }
-    }
-
-    ensure_instance_shared_skills(profile_dir)?;
-    normalize_inherited_config_toml(profile_dir, &source_home)?;
-    for relative_path in CODEX_SHARED_MEMORY_ITEMS {
-        let target = profile_dir.join(relative_path);
-        entries.push(MemoryInheritanceEntry {
-            path: relative_path.to_string(),
-            kind: "shared".to_string(),
-            status: if target.exists() {
-                "available".to_string()
-            } else {
-                "missing".to_string()
-            },
-            bytes: 0,
-            sha256: None,
-            error: None,
-        });
-    }
-
-    let manifest = MemoryInheritanceManifest {
-        version: 1,
-        created_at: Utc::now().timestamp_millis(),
-        source: source_home.to_string_lossy().to_string(),
-        target: profile_dir.to_string_lossy().to_string(),
-        entries,
-    };
-    let manifest_path = profile_dir.join(CODEX_CLONE_MEMORY_MANIFEST_FILE_NAME);
-    let content = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| format!("serialize memory inheritance manifest failed: {}", e))?;
-    modules::atomic_write::write_string_atomic(&manifest_path, &content)
-        .map_err(|e| format!("write memory inheritance manifest failed: {}", e))
-}
-
 pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, String> {
     let _lock = CODEX_INSTANCE_STORE_LOCK
         .lock()
@@ -1311,7 +810,7 @@ pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, 
     let init_mode = params
         .init_mode
         .as_deref()
-        .unwrap_or("copy")
+        .unwrap_or("empty")
         .to_ascii_lowercase();
     let create_empty = init_mode == "empty";
     let use_existing_dir = init_mode == "existingdir" || init_mode == "existing_dir";
@@ -1375,14 +874,13 @@ pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, 
         instance_store::copy_dir_recursive(&source_dir, &user_dir_path)?;
     }
 
-    ensure_instance_shared_skills(&user_dir_path)?;
-
     let instance = InstanceProfile {
         id: Uuid::new_v4().to_string(),
         name,
         user_data_dir,
         working_dir: params.working_dir,
         extra_args: params.extra_args.trim().to_string(),
+        launch_script: normalize_launch_script(params.launch_script),
         bind_account_id: params.bind_account_id,
         launch_mode: params.launch_mode.unwrap_or_default(),
         app_speed: params.app_speed.unwrap_or_default(),
@@ -1426,6 +924,9 @@ pub fn update_instance(params: UpdateInstanceParams) -> Result<InstanceProfile, 
     if let Some(ref extra_args) = params.extra_args {
         instance.extra_args = extra_args.trim().to_string();
     }
+    if let Some(script) = params.launch_script {
+        instance.launch_script = normalize_launch_script(script);
+    }
     if let Some(working_dir) = params.working_dir {
         instance.working_dir = if working_dir.trim().is_empty() {
             None
@@ -1446,6 +947,38 @@ pub fn update_instance(params: UpdateInstanceParams) -> Result<InstanceProfile, 
     let updated = instance.clone();
     save_instance_store(&store)?;
     Ok(updated)
+}
+
+pub fn prepare_instance_launch_script(
+    instance: &InstanceProfile,
+) -> Result<Option<PathBuf>, String> {
+    let Some(script) = normalize_launch_script(instance.launch_script.clone()) else {
+        return Ok(None);
+    };
+    let home = PathBuf::from(&instance.user_data_dir);
+    fs::create_dir_all(&home).map_err(|error| {
+        format!(
+            "create Codex clone home for launch script failed: {}",
+            error
+        )
+    })?;
+    let script_path = home.join(CODEX_LAUNCH_SCRIPT_FILE_NAME);
+    let content = format!(
+        "// Managed by Codex Clone Launcher. Clone-owned startup script.\n// This file is passed to external injection tooling via environment variables.\n\n{}\n",
+        script
+    );
+    modules::atomic_write::write_string_atomic(&script_path, &content)
+        .map_err(|error| format!("write clone launch script failed: {}", error))?;
+    Ok(Some(script_path))
+}
+
+fn normalize_launch_script(script: Option<String>) -> Option<String> {
+    let trimmed = script?.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 pub fn update_bound_instances_app_speed(
@@ -1651,6 +1184,52 @@ mod tests {
     }
 
     #[test]
+    fn normalize_launch_script_trims_empty_script() {
+        assert_eq!(normalize_launch_script(None), None);
+        assert_eq!(normalize_launch_script(Some("  \n\t  ".to_string())), None);
+        assert_eq!(
+            normalize_launch_script(Some(
+                "  window.__CODEX_CLONE_PROFILE__ = true;  ".to_string()
+            )),
+            Some("window.__CODEX_CLONE_PROFILE__ = true;".to_string())
+        );
+    }
+
+    #[test]
+    fn prepare_instance_launch_script_writes_clone_owned_file() {
+        let temp_dir = make_temp_dir("codex-launch-script-test");
+        let instance = InstanceProfile {
+            id: "test".to_string(),
+            name: "test".to_string(),
+            user_data_dir: temp_dir.to_string_lossy().to_string(),
+            working_dir: None,
+            extra_args: String::new(),
+            launch_script: Some("window.__CODEX_CLONE_PROFILE__ = true;".to_string()),
+            bind_account_id: None,
+            launch_mode: InstanceLaunchMode::App,
+            app_speed: CodexAppSpeed::Standard,
+            created_at: 0,
+            last_launched_at: None,
+            last_pid: None,
+        };
+
+        let script_path =
+            prepare_instance_launch_script(&instance).expect("launch script should be prepared");
+        let script_path = script_path.expect("configured script should return a path");
+
+        assert!(script_path.starts_with(&temp_dir));
+        assert_eq!(
+            script_path.file_name().and_then(|name| name.to_str()),
+            Some("codex-clone-launch-script.js")
+        );
+        let content = fs::read_to_string(&script_path).expect("read generated launch script");
+        assert!(content.contains("Managed by Codex Clone Launcher"));
+        assert!(content.contains("window.__CODEX_CLONE_PROFILE__ = true;"));
+
+        fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn directory_shared_link_falls_back_to_copy_when_link_creation_fails() {
         let temp_dir = make_temp_dir("codex-shared-link-copy-fallback-test");
         let source = temp_dir.join("source");
@@ -1675,139 +1254,6 @@ mod tests {
                 .expect("read copied nested file"),
             "child"
         );
-
-        fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn inherited_config_rewrites_plugin_sources_to_clone_home() {
-        let temp_dir = make_temp_dir("codex-config-path-rewrite-test");
-        let source_home = temp_dir.join("source").join(".codex");
-        let clone_home = temp_dir.join("clone");
-        fs::create_dir_all(&clone_home).expect("create clone home");
-
-        let source_plugins = normalize_toml_path_literal(
-            &source_home
-                .join(".tmp")
-                .join("bundled-marketplaces")
-                .join("openai-bundled"),
-        );
-        let source_cache = normalize_toml_path_literal(
-            &source_home
-                .join("plugins")
-                .join("cache")
-                .join("openai-curated"),
-        );
-        fs::write(
-            clone_home.join("config.toml"),
-            format!(
-                r#"[marketplaces.openai-bundled]
-source = '{}'
-
-[marketplaces.openai-curated]
-source = '{}'
-
-[plugins."linear@openai-curated"]
-enabled = true
-"#,
-                source_plugins, source_cache
-            ),
-        )
-        .expect("write config");
-
-        normalize_inherited_config_toml(&clone_home, &source_home).expect("normalize config");
-        let content = fs::read_to_string(clone_home.join("config.toml")).expect("read config");
-        assert!(content.contains("linear@openai-curated"));
-        assert!(content.contains(&normalize_toml_path_literal(
-            &clone_home
-                .join(".tmp")
-                .join("bundled-marketplaces")
-                .join("openai-bundled")
-        )));
-        assert!(content.contains(&normalize_toml_path_literal(
-            &clone_home
-                .join("plugins")
-                .join("cache")
-                .join("openai-curated")
-        )));
-        assert!(!content.contains(&source_home.to_string_lossy().to_string()));
-
-        fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn plugin_config_sync_preserves_clone_provider_config() {
-        let temp_dir = make_temp_dir("codex-plugin-config-sync-test");
-        let source_home = temp_dir.join("source").join(".codex");
-        let clone_home = temp_dir.join("clone");
-        fs::create_dir_all(&source_home).expect("create source home");
-        fs::create_dir_all(&clone_home).expect("create clone home");
-
-        let source_cache = normalize_toml_path_literal(
-            &source_home
-                .join("plugins")
-                .join("cache")
-                .join("openai-curated"),
-        );
-        fs::write(source_home.join(".credentials.json"), r#"{"plugins":true}"#)
-            .expect("write source credentials");
-        fs::write(
-            source_home.join("config.toml"),
-            format!(
-                r#"model = "gpt-source"
-
-[marketplaces.openai-curated]
-source = '{}'
-source_type = "local"
-
-[mcp_servers.github]
-type = "stdio"
-command = "npx"
-
-[plugins."linear@openai-curated"]
-enabled = true
-"#,
-                source_cache
-            ),
-        )
-        .expect("write source config");
-        fs::write(
-            clone_home.join("config.toml"),
-            r#"model = "gpt-clone"
-model_provider = "codex_local_access"
-
-[model_providers.codex_local_access]
-name = "Custom API"
-base_url = "https://relay.example.com/v1"
-wire_api = "responses"
-requires_openai_auth = true
-experimental_bearer_token = "sk-test"
-
-[plugins."browser-use@openai-bundled"]
-enabled = true
-"#,
-        )
-        .expect("write clone config");
-
-        sync_inherited_plugin_config_from_source(&clone_home, &source_home).expect("sync config");
-        let content = fs::read_to_string(clone_home.join("config.toml")).expect("read config");
-
-        assert!(content.contains(r#"model = "gpt-clone""#));
-        assert!(content.contains(r#"model_provider = "codex_local_access""#));
-        assert!(content.contains("[model_providers.codex_local_access]"));
-        assert!(content.contains(r#"base_url = "https://relay.example.com/v1""#));
-        assert!(content.contains(r#"experimental_bearer_token = "sk-test""#));
-        assert!(content.contains("[plugins.\"linear@openai-curated\"]"));
-        assert!(content.contains("[mcp_servers.github]"));
-        assert!(content.contains(&normalize_toml_path_literal(
-            &clone_home
-                .join("plugins")
-                .join("cache")
-                .join("openai-curated")
-        )));
-        assert!(!content.contains("gpt-source"));
-        assert!(!content.contains("[plugins.\"browser-use@openai-bundled\"]"));
-        assert!(clone_home.join(".credentials.json").exists());
 
         fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
     }

@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: npm ci
+
+      - name: Validate tag matches package version
+        run: node -e "const pkg=require('./package.json'); const expected='v'+pkg.version; if (process.env.GITHUB_REF_NAME !== expected) { console.error('Tag '+process.env.GITHUB_REF_NAME+' does not match package.json version '+expected); process.exit(1); }"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPDATER_OWNER_REPO: ${{ github.repository }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_RELEASE: codex-clone-launcher@${{ github.ref_name }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Codex Clone Launcher ${{ github.ref_name }}"
+          releaseBody: "Windows installer and Tauri updater metadata."
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+      - name: Verify updater release assets
+        run: node scripts/verify-updater-release.cjs --owner-repo "${{ github.repository }}" --tag "${{ github.ref_name }}" --latest-url "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

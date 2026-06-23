@@ -13,18 +13,23 @@ Codex Clone Launcher is a small Tauri desktop app for creating isolated Codex De
 
 ## Interface Preview
 
-![Codex Clone Launcher dashboard preview](docs/assets/dashboard-preview.svg)
+![Codex Clone Launcher dashboard preview](docs/assets/dashboard-preview.png)
 
 ## Features
 
 - Create, launch, stop, and delete Codex Desktop clones.
 - Keep each clone in an isolated `CODEX_HOME`.
+- Use separate official OpenAI/Codex accounts or third-party OpenAI-compatible API keys per clone.
+- Bridge Chat Completions-only providers such as Gemini/Claude-compatible gateways into the Responses wire protocol expected by Codex.
+- Launch Windows clones with an elevated sandbox configuration so the Codex app can continue after sandbox setup.
 - Manually extract a local Codex sync package before applying it to clones.
 - Copy only stable local artifacts such as `sessions`, `state_5.sqlite`, `session_index.jsonl`, `memories`, `skills`, `rules`, `AGENTS.md`, and `mcp-servers`.
 - Exclude runtime state such as `auth.json`, `.credentials.json`, `plugins`, `cache`, `log`, `.tmp`, and quota configuration.
 - Back up the previous sync package before replacing it.
 - Align inherited `threads.model_provider` and `threads.model` values to the clone's current `config.toml`.
 - Update session JSONL metadata and rebuild `session_index.jsonl` so inherited conversations appear in Codex Desktop.
+- Share local skills, MCP configuration, memories, and conversation indexes without copying account secrets.
+- Check clone health, model/provider alignment, sync-package freshness, and sandbox readiness from the dashboard.
 - Show history health, verification, sync, and repair status in the clone list.
 - Check signed GitHub Releases from inside the app and install updates through Tauri Updater.
 
@@ -68,7 +73,13 @@ On Windows, you can create a desktop shortcut for a source checkout:
 .\scripts\create-windows-shortcut.ps1
 ```
 
-The shortcut runs `scripts\start-codex-clone-launcher.ps1`, which installs dependencies when needed, rebuilds the release executable when sources are newer than the local build stamp, and starts `target\release\codex-clone-launcher.exe`.
+The shortcut is named `Codex 分身启动器.lnk` by default. It runs `scripts\start-codex-clone-launcher.ps1`, which installs dependencies when needed, rebuilds the release executable when sources are newer than the local build stamp, and starts `target\release\codex-clone-launcher.exe`.
+
+Verify the shortcut target, arguments, working directory, and icon wiring:
+
+```powershell
+npm run verify:windows-shortcut
+```
 
 ## In-App Updates
 
@@ -88,19 +99,22 @@ Release builds must be signed with the updater private key. The public key is st
 
 Do not store updater signing keys in `.env` files.
 
-The release workflow `.github/workflows/release.yml` publishes Windows NSIS installer assets and `latest.json` when you push a tag matching `package.json`, such as `vX.Y.Z`. The app diagnoses common updater failures in the UI, including missing `latest.json`, signature/public-key mismatch, GitHub network failures, and relaunch failures after a successful install.
+The release workflow `.github/workflows/release.yml` publishes Windows installer assets and `latest.json` when you push a tag matching `package.json`, such as `vX.Y.Z`. The app diagnoses common updater failures in the UI, including missing `latest.json`, signature/public-key mismatch, GitHub network failures, and relaunch failures after a successful install.
 
-Portable `.zip` builds are useful for manual download, but they are not treated as valid automatic updater packages by default. Publish a signed NSIS `.exe` installer for automatic updates. MSI remains supported by the verification script, but the public workflow builds NSIS by default to avoid WiX-specific packaging failures on GitHub-hosted Windows runners.
+Portable `.zip` builds are useful for manual download, but they are not treated as valid automatic updater packages by default. Publish a signed NSIS `.exe` or MSI `.msi` installer for automatic updates.
 
 Typical release flow:
 
 ```powershell
 npm version X.Y.Z --no-git-tag-version
 npm run sync-version
+npm run verify
 git commit -am "chore: release vX.Y.Z"
 git tag vX.Y.Z
 git push origin main --tags
 ```
+
+`npm run verify` covers TypeScript, production frontend build, Rust tests, UI smoke/regression, mocked Tauri UI workflows for clone creation/sync/update failure states, release workflow hardening, and Windows shortcut wiring.
 
 Before treating a GitHub Release as updater-ready, run:
 
@@ -161,7 +175,7 @@ npm run tauri -- build
 Create a shortcut somewhere else:
 
 ```powershell
-.\scripts\create-windows-shortcut.ps1 -ShortcutPath "$env:USERPROFILE\Desktop\Codex Clone Launcher.lnk"
+.\scripts\create-windows-shortcut.ps1 -ShortcutPath "$env:USERPROFILE\Desktop\Codex 分身启动器.lnk"
 ```
 
 ## Repository Map

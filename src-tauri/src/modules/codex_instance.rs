@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
+use toml_edit::{value, Document};
 use uuid::Uuid;
 
 use crate::models::codex::CodexAppSpeed;
@@ -18,9 +19,18 @@ const CODEX_INSTANCES_FILE: &str = "codex_instances.json";
 pub const CODEX_API_SERVICE_BIND_ACCOUNT_ID: &str = "__api_service__";
 const CODEX_SHARED_SKILLS_DIR_NAME: &str = "skills";
 const CODEX_SHARED_RULES_DIR_NAME: &str = "rules";
+const CODEX_SHARED_MCP_SERVERS_DIR_NAME: &str = "mcp-servers";
+const CODEX_SHARED_PLUGIN_CACHE_DIR_NAME: &str = "plugins/cache";
 const CODEX_SHARED_AGENTS_FILE_NAME: &str = "AGENTS.md";
 const CODEX_SHARED_VENDOR_IMPORTS_SKILLS_DIR: &str = "vendor_imports/skills";
 const CODEX_LAUNCH_SCRIPT_FILE_NAME: &str = "codex-clone-launch-script.js";
+const CODEX_FEATURED_REMOTE_PLUGIN_IDS: &[&str] = &[
+    "data-analytics",
+    "product-design",
+    "creative-production",
+    "sales",
+    "investment-banking",
+];
 #[cfg(target_os = "windows")]
 const CODEX_WINDOWS_APP_DATA_DIR_NAME: &str = "codex-app-data";
 
@@ -792,6 +802,80 @@ pub fn ensure_instance_shared_skills(profile_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_instance_shared_resource_directories(
+    profile_dir: &Path,
+    default_codex_home: &Path,
+) -> Result<(), String> {
+    if paths_point_to_same_location(profile_dir, default_codex_home) {
+        return Ok(());
+    }
+
+    fs::create_dir_all(profile_dir).map_err(|e| format!("鍒涘缓瀹炰緥鐩綍澶辫触: {}", e))?;
+    for relative_path in [
+        Path::new(CODEX_SHARED_SKILLS_DIR_NAME),
+        Path::new(CODEX_SHARED_RULES_DIR_NAME),
+        Path::new(CODEX_SHARED_VENDOR_IMPORTS_SKILLS_DIR),
+        Path::new(CODEX_SHARED_MCP_SERVERS_DIR_NAME),
+        Path::new(CODEX_SHARED_PLUGIN_CACHE_DIR_NAME),
+    ] {
+        sync_shared_directory(profile_dir, default_codex_home, relative_path)?;
+    }
+
+    Ok(())
+}
+
+pub fn ensure_instance_shared_resources(profile_dir: &Path) -> Result<(), String> {
+    let default_codex_home = get_default_codex_home()?;
+    ensure_instance_shared_resource_directories(profile_dir, &default_codex_home)
+}
+
+pub fn ensure_instance_featured_remote_plugins(profile_dir: &Path) -> Result<usize, String> {
+    fs::create_dir_all(profile_dir)
+        .map_err(|error| format!("创建 Codex 实例目录失败: {}", error))?;
+    let config_path = profile_dir.join("config.toml");
+    let content = fs::read_to_string(&config_path).unwrap_or_default();
+    let mut doc = if content.trim().is_empty() {
+        Document::new()
+    } else {
+        content
+            .parse::<Document>()
+            .map_err(|error| format!("解析 config.toml 失败: {}", error))?
+    };
+
+    if !doc.as_table().contains_key("plugins") {
+        doc["plugins"] = toml_edit::table();
+    }
+    let plugins = doc["plugins"]
+        .as_table_mut()
+        .ok_or("config.toml 中 plugins 不是合法表结构")?;
+
+    let mut changed = 0;
+    for plugin_id in CODEX_FEATURED_REMOTE_PLUGIN_IDS {
+        let key = format!("{}@openai-curated-remote", plugin_id);
+        if !plugins.contains_key(&key) {
+            plugins[&key] = toml_edit::table();
+            plugins[&key]["enabled"] = value(true);
+            changed += 1;
+            continue;
+        }
+        if plugins
+            .get(&key)
+            .and_then(|item| item.get("enabled"))
+            .is_none()
+        {
+            plugins[&key]["enabled"] = value(true);
+            changed += 1;
+        }
+    }
+
+    if changed > 0 {
+        modules::atomic_write::write_string_atomic(&config_path, &doc.to_string())
+            .map_err(|error| format!("写入 config.toml 失败: {}", error))?;
+    }
+
+    Ok(changed)
+}
+
 pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, String> {
     let _lock = CODEX_INSTANCE_STORE_LOCK
         .lock()
@@ -873,6 +957,9 @@ pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, 
 
         instance_store::copy_dir_recursive(&source_dir, &user_dir_path)?;
     }
+
+    ensure_instance_shared_resources(&user_dir_path)?;
+    ensure_instance_featured_remote_plugins(&user_dir_path)?;
 
     let instance = InstanceProfile {
         id: Uuid::new_v4().to_string(),
@@ -1254,6 +1341,135 @@ mod tests {
                 .expect("read copied nested file"),
             "child"
         );
+
+        fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
+    }
+
+    fn assert_shared_directory_available(path: &Path, expected_file: &Path) {
+        let metadata = fs::symlink_metadata(path).expect("shared directory metadata");
+        assert!(
+            is_directory_shared_link(&metadata, path) || metadata.is_dir(),
+            "shared resource should be a link/junction or copied directory: {}",
+            path.display()
+        );
+        assert!(
+            expected_file.exists(),
+            "shared resource content should be available: {}",
+            expected_file.display()
+        );
+    }
+
+    #[test]
+    fn instance_shared_resources_include_plugins_mcp_and_skills_without_agents_or_config() {
+        let temp_dir = make_temp_dir("codex-shared-runtime-resources-test");
+        let default_home = temp_dir.join("default");
+        let clone_home = temp_dir.join("clone");
+
+        fs::create_dir_all(default_home.join("skills").join("define-goal"))
+            .expect("create source skill");
+        fs::write(
+            default_home
+                .join("skills")
+                .join("define-goal")
+                .join("SKILL.md"),
+            "# Define Goal",
+        )
+        .expect("write source skill");
+        fs::create_dir_all(default_home.join("mcp-servers").join("time"))
+            .expect("create source mcp");
+        fs::write(
+            default_home
+                .join("mcp-servers")
+                .join("time")
+                .join("server.json"),
+            "{}",
+        )
+        .expect("write source mcp");
+        fs::create_dir_all(
+            default_home
+                .join("plugins")
+                .join("cache")
+                .join("openai-curated"),
+        )
+        .expect("create source plugin cache");
+        fs::write(
+            default_home
+                .join("plugins")
+                .join("cache")
+                .join("openai-curated")
+                .join("plugin.json"),
+            "{}",
+        )
+        .expect("write source plugin cache");
+        fs::write(default_home.join("AGENTS.md"), "# Global").expect("write global agents");
+        fs::write(default_home.join("auth.json"), "{\"token\":\"secret\"}")
+            .expect("write global auth");
+        fs::write(default_home.join("config.toml"), "model = \"gpt-5\"")
+            .expect("write global config");
+
+        fs::create_dir_all(&clone_home).expect("create clone home");
+        fs::write(clone_home.join("AGENTS.md"), "# Clone").expect("write clone agents");
+
+        ensure_instance_shared_resource_directories(&clone_home, &default_home)
+            .expect("ensure shared runtime resources");
+
+        assert_shared_directory_available(
+            &clone_home.join("skills"),
+            &clone_home
+                .join("skills")
+                .join("define-goal")
+                .join("SKILL.md"),
+        );
+        assert_shared_directory_available(
+            &clone_home.join("mcp-servers"),
+            &clone_home
+                .join("mcp-servers")
+                .join("time")
+                .join("server.json"),
+        );
+        assert_shared_directory_available(
+            &clone_home.join("plugins").join("cache"),
+            &clone_home
+                .join("plugins")
+                .join("cache")
+                .join("openai-curated")
+                .join("plugin.json"),
+        );
+
+        assert_eq!(
+            fs::read_to_string(clone_home.join("AGENTS.md")).expect("read clone agents"),
+            "# Clone"
+        );
+        assert!(!clone_home.join("auth.json").exists());
+        assert!(!clone_home.join("config.toml").exists());
+
+        fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn ensure_featured_remote_plugins_adds_missing_without_overriding_disabled() {
+        let temp_dir = make_temp_dir("codex-featured-remote-plugins-test");
+        fs::write(
+            temp_dir.join("config.toml"),
+            r#"[plugins."product-design@openai-curated-remote"]
+enabled = false
+"#,
+        )
+        .expect("write config");
+
+        let changed = ensure_instance_featured_remote_plugins(&temp_dir)
+            .expect("ensure featured remote plugins");
+
+        assert_eq!(changed, 4);
+        let config = fs::read_to_string(temp_dir.join("config.toml")).expect("read config");
+        assert!(config.contains(r#"[plugins."data-analytics@openai-curated-remote"]"#));
+        assert!(config.contains(r#"[plugins."creative-production@openai-curated-remote"]"#));
+        assert!(config.contains(r#"[plugins."sales@openai-curated-remote"]"#));
+        assert!(config.contains(r#"[plugins."investment-banking@openai-curated-remote"]"#));
+        assert!(config.contains(
+            r#"[plugins."product-design@openai-curated-remote"]
+enabled = false"#
+        ));
 
         fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
     }

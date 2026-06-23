@@ -40,3 +40,7 @@ tiny_http = "0.12"
 rsa = "0.9"
 serde_urlencoded = "0.7"
 windows = { version = "0.58", features = ["Win32_Foundation"] }
+
+[profile.release]
+# Avoid MSVC rustc 0xffffffff crashes seen while compiling Windows/Tauri crates.
+opt-level = 0

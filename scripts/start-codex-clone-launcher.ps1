@@ -71,17 +71,13 @@ function Invoke-LoggedNpm {
   $stderrPath = [System.IO.Path]::GetTempFileName()
 
   try {
-    $quotedNpm = '"' + $npmCommand.Source + '"'
-    $quotedArguments = ($Arguments | ForEach-Object {
-        if ($_ -match '[\s"]') {
-          '"' + ($_ -replace '"', '\"') + '"'
-        } else {
-          $_
-        }
-      }) -join ' '
-    $commandLine = "$quotedNpm $quotedArguments 1> `"$stdoutPath`" 2> `"$stderrPath`""
-    & $env:ComSpec /d /s /c $commandLine
-    $exitCode = $LASTEXITCODE
+    Push-Location -LiteralPath $ProjectRoot
+    try {
+      & $npmCommand.Source @Arguments > $stdoutPath 2> $stderrPath
+      $exitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }
+    } finally {
+      Pop-Location
+    }
 
     if (Test-Path -LiteralPath $stdoutPath) {
       Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue | Add-Content -LiteralPath $LogPath

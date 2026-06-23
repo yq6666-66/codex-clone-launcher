@@ -123,11 +123,33 @@ fn normalize_custom_path(raw: Option<&str>) -> Option<PathBuf> {
         return None;
     }
     let path = PathBuf::from(value);
-    if path.exists() {
+    if path.is_file() {
         Some(path)
     } else {
         None
     }
+}
+
+pub fn validate_codex_desktop_app_path(path: &str) -> Result<PathBuf, String> {
+    let normalized = normalize_custom_path(Some(path))
+        .ok_or_else(|| "Codex 启动路径必须指向一个存在的文件".to_string())?;
+    let file_name = normalized
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if !file_name.eq_ignore_ascii_case("Codex.exe") && !file_name.eq_ignore_ascii_case("Codex") {
+        return Err("Codex 启动路径必须指向 Codex.exe".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    if normalized
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+        .ends_with("\\resources\\codex.exe")
+    {
+        return Err("请选择桌面端 Codex.exe，不要选择 resources\\codex.exe CLI".to_string());
+    }
+    Ok(normalized)
 }
 
 #[cfg(target_os = "windows")]
@@ -322,25 +344,60 @@ fn resolve_codex_launch_path() -> Result<PathBuf, String> {
 }
 
 fn resolve_codex_desktop_launch_path() -> Result<PathBuf, String> {
-    let detected = detect_codex_exec_path().ok_or_else(|| {
-        "Codex executable was not found. Configure the Codex launch path in settings.".to_string()
-    })?;
-
     if let Some(custom) = normalize_custom_path(Some(&config::get_user_config().codex_app_path)) {
         #[cfg(target_os = "windows")]
         {
+            if !is_protected_or_cli_codex_path(&custom) {
+                return Ok(custom);
+            }
+            let detected = detect_codex_exec_path().ok_or_else(|| {
+                "Codex executable was not found. Configure the Codex launch path in settings."
+                    .to_string()
+            })?;
             if is_protected_or_cli_codex_path(&custom) {
                 save_detected_codex_launch_path(&detected);
                 return Ok(detected);
             }
         }
+        #[cfg(not(target_os = "windows"))]
         return Ok(custom);
     }
+
+    let detected = detect_codex_exec_path().ok_or_else(|| {
+        "Codex executable was not found. Configure the Codex launch path in settings.".to_string()
+    })?;
 
     #[cfg(target_os = "windows")]
     save_detected_codex_launch_path(&detected);
 
     Ok(detected)
+}
+
+pub fn codex_desktop_launch_path_diagnostics() -> (Option<String>, String) {
+    let configured = normalize_custom_path(Some(&config::get_user_config().codex_app_path));
+    if let Some(custom) = configured {
+        #[cfg(target_os = "windows")]
+        if is_protected_or_cli_codex_path(&custom) {
+            return match detect_codex_exec_path() {
+                Some(detected) => (
+                    Some(detected.to_string_lossy().to_string()),
+                    "detected-from-protected-config".to_string(),
+                ),
+                None => (None, "protected-config-detection-failed".to_string()),
+            };
+        }
+        return (
+            Some(custom.to_string_lossy().to_string()),
+            "configured".to_string(),
+        );
+    }
+    match detect_codex_exec_path() {
+        Some(detected) => (
+            Some(detected.to_string_lossy().to_string()),
+            "detected".to_string(),
+        ),
+        None => (None, "missing".to_string()),
+    }
 }
 
 pub fn ensure_codex_launch_path_configured() -> Result<(), String> {

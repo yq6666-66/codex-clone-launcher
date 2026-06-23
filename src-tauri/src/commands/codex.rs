@@ -1,10 +1,13 @@
-use crate::models::codex::CodexAccount;
+use crate::models::codex::CodexAccountView;
 use crate::modules::{codex_account, codex_oauth, logger};
 use tauri::{AppHandle, Emitter};
 
 #[tauri::command]
-pub fn list_codex_accounts() -> Result<Vec<CodexAccount>, String> {
-    codex_account::list_accounts_checked()
+pub fn list_codex_accounts() -> Result<Vec<CodexAccountView>, String> {
+    Ok(codex_account::list_accounts_checked()?
+        .iter()
+        .map(CodexAccountView::from)
+        .collect())
 }
 
 #[tauri::command]
@@ -16,7 +19,7 @@ pub async fn codex_oauth_login_start(
 }
 
 #[tauri::command]
-pub async fn codex_oauth_login_completed(login_id: String) -> Result<CodexAccount, String> {
+pub async fn codex_oauth_login_completed(login_id: String) -> Result<CodexAccountView, String> {
     logger::log_info(&format!(
         "Codex OAuth complete requested from minimal launcher: login_id={}",
         login_id
@@ -24,7 +27,9 @@ pub async fn codex_oauth_login_completed(login_id: String) -> Result<CodexAccoun
 
     let tokens = codex_oauth::complete_oauth_login(&login_id).await?;
     let account = codex_account::upsert_account(tokens)?;
-    codex_account::load_account(&account.id).ok_or_else(|| "账号保存后无法读取".to_string())
+    let account = codex_account::load_account(&account.id)
+        .ok_or_else(|| "account saved but could not be loaded".to_string())?;
+    Ok(CodexAccountView::from(&account))
 }
 
 #[tauri::command]

@@ -1,42 +1,98 @@
-import { createElement, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { openPath, openUrl } from '@tauri-apps/plugin-opener';
-import { relaunch } from '@tauri-apps/plugin-process';
-import { check } from '@tauri-apps/plugin-updater';
 import {
-  Activity,
-  BookOpen,
   CheckCircle2,
   CircleAlert,
-  Copy,
-  Database,
-  Download,
-  ExternalLink,
-  FileText,
-  FolderOpen,
-  Gauge,
-  GitBranch,
   Moon,
-  Import,
-  KeyRound,
-  Layers,
   Loader2,
-  Play,
-  RefreshCw,
-  Rocket,
-  Search,
-  Settings,
-  ShieldCheck,
   Sun,
-  Target,
   Monitor,
-  Wrench,
 } from 'lucide-react';
 import './App.css';
-import { reportError } from './telemetry';
+import { CreateCodexPage } from './features/accounts/CreateCodexPage';
+import { accountLabel, isApiKeyAccount } from './features/accounts/accountUtils';
+import {
+  providerTestStatusLabel,
+  type ProviderConfigAudit,
+  type ProviderConfigAuditCheck,
+  type ProviderConfigAuditTone,
+  type ProviderFeedbackLabels,
+} from './features/accounts/ProviderFeedbackPanels';
+import { DashboardPage, type DashboardPageLabels } from './features/dashboard/DashboardPage';
+import {
+  buildDiagnosticsReport,
+  buildGitWorktreeDiagnosticsReport,
+} from './features/diagnostics/diagnosticsReports';
+import { OperationGuide, type OperationGuideLabels } from './features/guide/OperationGuide';
+import { CodexInstancesPage } from './features/instances/CodexInstancesPage';
+import type { CloneCapabilityEditorLabels } from './features/instances/CloneCapabilityEditor';
+import type { InstanceListHelpers, InstanceListLabels } from './features/instances/InstanceList';
+import { SettingsPage } from './features/settings/SettingsPage';
+import {
+  type ResourceLensLabels,
+  type SyncPackageMaintenanceLabels,
+} from './features/sync-package/SyncPackageResources';
+import {
+  buildResourceLensReport,
+  buildSyncPackageBackupReport,
+  buildSyncPackagePreflightReport,
+  buildSyncPackageResourceDiffReport,
+  buildSyncPackageResourceReport,
+  type SyncPackageReportDeps,
+  type SyncPackageResourceDiffReportDeps,
+} from './features/sync-package/syncPackageReports';
+import {
+  syncPackageAppliedFreshness as buildSyncPackageAppliedFreshness,
+  syncPackageAppliedMarkerPath,
+  syncPackageAppliedResourceRatio,
+  syncPackageAppliedSummary as buildSyncPackageAppliedSummary,
+  syncPackageApplyBlocker as getSyncPackageApplyBlocker,
+  syncPackagePreflightBlocker,
+  syncPackageRepairBlocker as getSyncPackageRepairBlocker,
+  syncPackageResourceDiffHint,
+  syncPackageStateLabel as getSyncPackageStateLabel,
+  type SyncPackageFreshness,
+  type SyncPackageStatusLabels,
+} from './features/sync-package/syncPackageStatus';
+import { getDiagnosticsSnapshot } from './services/diagnostics';
+import type { InstanceCapabilityBadgeLabels } from './features/instances/InstanceCapabilityBadges';
+import type { InstanceHistoryCellLabels } from './features/instances/InstanceHistoryCell';
+import type { InstanceListSectionLabels } from './features/instances/InstanceListSection';
+import type { InstanceMoreActionLabels } from './features/instances/InstanceMoreActionItems';
+import type { InstancePrimaryActionLabels } from './features/instances/InstancePrimaryActions';
+import type { InstanceTableHeaderLabels } from './features/instances/InstanceTableHeader';
+import type { SessionPanelLabels } from './features/instances/SessionPanels';
+import { visibleInstances } from './features/instances/instanceUtils';
+import { useAppUpdater } from './features/updater/useAppUpdater';
+import type {
+  CodexAccount,
+  CloneCapabilityEditDraft,
+  CloneReadinessCheck,
+  CloneReadinessSummary,
+  CloneReadinessTone,
+  CodexHistoryStatus,
+  CodexHistorySyncResult,
+  CloneFormValues,
+  CodexProviderConnectionTestResult,
+  CodexProviderModelsFetchResult,
+  CodexSessionExportResult,
+  CodexSessionSummary,
+  CodexSessionUsageSummary,
+  CodexSyncPackageBackupSummary,
+  CodexSyncPackagePreflightReport,
+  CodexSyncPackageStatus,
+  DiagnosticsSnapshot,
+  GeneralConfig,
+  GitWorktreeCreateResult,
+  GitWorktreeDefaults,
+  GitWorktreeFormValues,
+  InstanceProfile,
+  ZedOpenResult,
+} from './shared/types';
+import { getLocalErrorEvents, reportError } from './telemetry';
 import { updaterConfig } from './generated/updater';
 import {
   DEFAULT_MODEL,
@@ -50,14 +106,6 @@ type Page = 'dashboard' | 'codexCreate' | 'codexList' | 'settings' | 'guide';
 type AuthType = 'apiKey' | 'officialAccount';
 type ThemeMode = 'system' | 'dark' | 'light';
 
-type CodexAccount = {
-  id: string;
-  email: string;
-  auth_mode?: string | null;
-  openai_api_key?: string | null;
-  account_name?: string | null;
-};
-
 type OAuthStartResponse = {
   loginId?: string;
   authUrl?: string;
@@ -65,371 +113,9 @@ type OAuthStartResponse = {
   auth_url?: string;
 };
 
-type InstanceProfile = {
-  id: string;
-  name: string;
-  userDataDir: string;
-  workingDir?: string | null;
-  launchScript?: string | null;
-  modelCatalogEnabled?: boolean;
-  modelCatalogPath?: string | null;
-  modelCatalogCount?: number;
-  goalEnabled?: boolean;
-  goal?: string | null;
-  goalPath?: string | null;
-  promptPackEnabled?: boolean;
-  promptPack?: string | null;
-  promptPackPath?: string | null;
-  running: boolean;
-  isDefault?: boolean;
-  lastPid?: number | null;
-  lastLaunchedAt?: number | null;
-  historyStatus?: CodexHistoryStatus | null;
-};
-
-type CodexHistoryStatus = {
-  codexHome?: string;
-  ok: boolean;
-  currentProvider: string;
-  currentModel?: string | null;
-  threadCount: number;
-  sessionFileCount: number;
-  sessionIndexCount: number;
-  mismatchCount: number;
-  missingSessionFiles: number;
-  authOk: boolean;
-  boundAccountId?: string | null;
-  authMode?: string | null;
-  providerBaseUrlHost?: string | null;
-  syncMode?: string | null;
-  lastSyncAt?: number | null;
-  lastBackupPath?: string | null;
-  syncPackageApplied?: CodexSyncPackageAppliedMarker | null;
-  warnings: string[];
-};
-
-type CodexHistorySyncResult = {
-  ok: boolean;
-  dryRun: boolean;
-  threadCount: number;
-  mismatchCountBefore: number;
-  mismatchCountAfter: number;
-  updatedThreads: number;
-  updatedRolloutPaths: number;
-  updatedSessionFiles: number;
-  rewrittenIndexEntries: number;
-  syncedThreads: number;
-  backupRetentionDeleted: number;
-  lockWaitMs: number;
-  stderrWarnings: string[];
-  authMode?: string | null;
-  providerBaseUrlHost?: string | null;
-  syncMode?: string | null;
-  backupPath?: string | null;
-  warnings: string[];
-};
-
-type CodexSessionExportResult = {
-  sessionId: string;
-  title: string;
-  exportedPath: string;
-  messageCount: number;
-};
-
-type ZedOpenResult = {
-  target: string;
-  mode: string;
-  zedPath: string;
-};
-
-type CodexProviderConnectionTestResult = {
-  ok: boolean;
-  codexReady: boolean;
-  status: string;
-  protocol: string;
-  endpoint: string;
-  httpStatus?: number | null;
-  latencyMs: number;
-  ttfbMs?: number | null;
-  message: string;
-  responsePreview?: string | null;
-};
-
-type CodexProviderModelsFetchResult = {
-  ok: boolean;
-  status: string;
-  endpoint: string;
-  httpStatus?: number | null;
-  latencyMs: number;
-  modelCount: number;
-  models: string[];
-  message: string;
-  responsePreview?: string | null;
-};
-
-type GitWorktreeDefaults = {
-  repoDir: string;
-  currentBranch: string;
-  remotes: string[];
-  baseRemote: string;
-  baseBranch: string;
-  baseRef: string;
-  suggestedBranch: string;
-  suggestedWorktreeDir: string;
-  dirty: boolean;
-  warnings: string[];
-};
-
-type GitWorktreeCreateResult = {
-  repoDir: string;
-  baseRef: string;
-  newBranch: string;
-  worktreeDir: string;
-  fetched: boolean;
-  output: string;
-  warnings: string[];
-};
-
-type CodexSessionSummary = {
-  sessionId: string;
-  title: string;
-  rolloutPath: string;
-  projectDir?: string | null;
-  summary?: string | null;
-  searchPreview?: string | null;
-  messageCount: number;
-  lastMessageAt?: string | null;
-  rolloutExists: boolean;
-};
-
-type CodexSessionUsageModelSummary = {
-  model: string;
-  eventCount: number;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-};
-
-type CodexSessionUsageSummary = {
-  codexHome: string;
-  scannedFiles: number;
-  parsedFiles: number;
-  eventCount: number;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  firstEventAt?: string | null;
-  lastEventAt?: string | null;
-  byModel: CodexSessionUsageModelSummary[];
-  warnings: string[];
-};
-
-type SessionUsagePricingRule = {
-  pattern: RegExp;
-  label: string;
-  source: string;
-  inputUsdPerMillion: number;
-  cachedInputUsdPerMillion: number;
-  outputUsdPerMillion: number;
-};
-
-type SessionUsageCostEstimate = {
-  model: string;
-  priced: boolean;
-  pricingLabel: string;
-  pricingSource: string;
-  billableInputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  inputCostUsd: number;
-  cachedInputCostUsd: number;
-  outputCostUsd: number;
-  totalCostUsd: number;
-};
-
-type SessionUsageCostSummary = {
-  totalCostUsd: number;
-  pricedModels: number;
-  unpricedModels: number;
-  billableInputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  cacheHitRate: number;
-  byModel: SessionUsageCostEstimate[];
-};
-
-type CodexSyncPackageResourceSummary = {
-  id: string;
-  label: string;
-  status: string;
-  applyMode: string;
-  fileCount: number;
-  directoryCount: number;
-  bytes: number;
-  paths: string[];
-  missing: string[];
-  errors: string[];
-  items?: string[];
-  detail: string;
-};
-
-type CodexSyncPackageAppliedMarker = {
-  version: number;
-  appliedAt: number;
-  packagePath: string;
-  manifestPath: string;
-  packageCreatedAt?: number | null;
-  source?: string | null;
-  staleWhenApplied: boolean;
-  fileCount: number;
-  directoryCount: number;
-  copiedBytes: number;
-  resources: CodexSyncPackageResourceSummary[];
-  warnings: string[];
-};
-
-type CodexSyncPackageStatus = {
-  exists: boolean;
-  packagePath: string;
-  manifestPath: string;
-  source?: string | null;
-  createdAt?: number | null;
-  sourceModifiedAt?: number | null;
-  stale: boolean;
-  fileCount: number;
-  directoryCount: number;
-  copiedBytes: number;
-  entries: Array<{
-    path: string;
-    kind: string;
-    status: string;
-    bytes: number;
-    fileCount?: number;
-    directoryCount?: number;
-    sha256?: string | null;
-    error?: string | null;
-  }>;
-  resources?: CodexSyncPackageResourceSummary[];
-  skipped: string[];
-  warnings: string[];
-};
-
-type CodexSyncPackageBackupSummary = {
-  id: string;
-  backupPath: string;
-  packagePath: string;
-  manifestPath: string;
-  backupCreatedAt?: number | null;
-  packageCreatedAt?: number | null;
-  source?: string | null;
-  fileCount: number;
-  directoryCount: number;
-  copiedBytes: number;
-  resourceCount: number;
-  readyResourceCount: number;
-  status: string;
-  warnings: string[];
-  error?: string | null;
-};
-
-type CodexSyncPackagePreflightCheck = {
-  id: string;
-  label: string;
-  status: string;
-  detail: string;
-  action?: string | null;
-};
-
-type CodexSyncPackagePreflightReport = {
-  checkedAt: number;
-  status: string;
-  readyToApply: boolean;
-  packagePath: string;
-  manifestPath: string;
-  packageCreatedAt?: number | null;
-  source?: string | null;
-  stale: boolean;
-  entriesChecked: number;
-  resourcesChecked: number;
-  errorCount: number;
-  warningCount: number;
-  unsafePaths: string[];
-  checks: CodexSyncPackagePreflightCheck[];
-};
-
-type GeneralConfig = {
-  codex_app_path: string;
-};
-
-type DiagnosticsSnapshot = {
-  logDir: string;
-  latestLogFile?: string | null;
-  latestLogTail: string;
-  logFiles: Array<{
-    name: string;
-    path: string;
-    bytes: number;
-    modifiedAt?: number | null;
-  }>;
-  codexAppPath: string;
-  codexAppPathExists: boolean;
-  launcherPid: number;
-};
-
 type Message = {
   tone: 'success' | 'error';
   text: string;
-};
-
-const APPLIED_SYNC_PACKAGE_MARKER_FILE = 'clone-sync-package-applied.json';
-
-type AvailableUpdate = Awaited<ReturnType<typeof check>>;
-
-type UpdateStatus = {
-  message: string;
-  version?: string;
-  notes?: string;
-  downloaded?: number;
-  total?: number;
-  checkedAt?: number;
-  diagnostic?: string;
-};
-
-type CloneFormValues = {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  modelCatalogEnabled: boolean;
-  providerId: string;
-  providerName: string;
-  workingDir: string;
-  launchScript: string;
-  goalEnabled: boolean;
-  goalText: string;
-  promptPackEnabled: boolean;
-  promptPackText: string;
-  inheritLocalData: boolean;
-  launchAfterCreate: boolean;
-};
-
-type CloneCapabilityEditDraft = {
-  goalEnabled: boolean;
-  goalText: string;
-  promptPackEnabled: boolean;
-  promptPackText: string;
-};
-
-type GitWorktreeFormValues = {
-  repoDir: string;
-  baseRemote: string;
-  baseBranch: string;
-  newBranch: string;
-  worktreeDir: string;
-  fetchBeforeCreate: boolean;
 };
 
 type CloneCapabilitySnapshot = {
@@ -467,45 +153,6 @@ type CloneCapabilitySnapshotExportResult = {
   snapshot: CloneCapabilitySnapshot;
 };
 
-type CloneReadinessTone = 'ok' | 'warning' | 'blocked' | 'muted';
-
-type CloneReadinessCheck = {
-  id: string;
-  status: CloneReadinessTone;
-  label: string;
-  detail: string;
-};
-
-type CloneReadinessSummary = {
-  tone: CloneReadinessTone;
-  label: string;
-  detail: string;
-  checks: CloneReadinessCheck[];
-  blockingCount: number;
-  warningCount: number;
-};
-
-type ProviderConfigAuditTone = 'ok' | 'warning' | 'blocked' | 'muted';
-
-type ProviderConfigAuditCheck = {
-  id: string;
-  status: ProviderConfigAuditTone;
-  label: string;
-  detail: string;
-};
-
-type ProviderConfigAudit = {
-  tone: ProviderConfigAuditTone;
-  label: string;
-  detail: string;
-  normalizedBaseUrl: string;
-  duplicatePresetCount: number;
-  similarPresetCount: number;
-  blockingCount: number;
-  warningCount: number;
-  checks: ProviderConfigAuditCheck[];
-};
-
 type ProviderHealthRecord = {
   id: string;
   providerId: string;
@@ -524,71 +171,19 @@ type ProviderHealthRecord = {
   testedAt: number;
 };
 
-const UPDATE_AUTO_CHECK_KEY = 'codex-clone-launcher:auto-update-check:v2';
-const UPDATE_SKIPPED_VERSION_KEY = 'codex-clone-launcher:skipped-update-version';
 const CUSTOM_PROVIDER_PRESETS_KEY = 'codex-clone-launcher:custom-provider-presets:v1';
 const PROVIDER_HEALTH_HISTORY_KEY = 'codex-clone-launcher:provider-health-history:v1';
 const THEME_MODE_KEY = 'codex-clone-launcher:theme-mode:v1';
 const CLONE_MODEL_CATALOG_MAX_MODELS = 240;
 const PROVIDER_HEALTH_HISTORY_LIMIT = 48;
 const CLONE_CAPABILITY_SNAPSHOT_APP = 'codex-clone-launcher';
-const sessionUsagePricingRules: SessionUsagePricingRule[] = [
-  {
-    pattern: /gpt-5\.5|gpt-5|codex/i,
-    label: 'GPT/Codex family estimate',
-    source: 'local reference',
-    inputUsdPerMillion: 1.25,
-    cachedInputUsdPerMillion: 0.125,
-    outputUsdPerMillion: 10,
-  },
-  {
-    pattern: /gpt-4\.1|gpt-4o/i,
-    label: 'GPT-4 class estimate',
-    source: 'local reference',
-    inputUsdPerMillion: 2.5,
-    cachedInputUsdPerMillion: 1.25,
-    outputUsdPerMillion: 10,
-  },
-  {
-    pattern: /\bo3\b|o3-|o1/i,
-    label: 'reasoning model estimate',
-    source: 'local reference',
-    inputUsdPerMillion: 10,
-    cachedInputUsdPerMillion: 2.5,
-    outputUsdPerMillion: 40,
-  },
-  {
-    pattern: /o4-mini|gpt-4\.1-mini|gpt-4o-mini/i,
-    label: 'mini model estimate',
-    source: 'local reference',
-    inputUsdPerMillion: 0.6,
-    cachedInputUsdPerMillion: 0.15,
-    outputUsdPerMillion: 2.4,
-  },
-  {
-    pattern: /deepseek|qwen|kimi|glm|moonshot|yi-|minimax|mimo/i,
-    label: 'domestic gateway estimate',
-    source: 'local reference',
-    inputUsdPerMillion: 0.4,
-    cachedInputUsdPerMillion: 0.1,
-    outputUsdPerMillion: 1.6,
-  },
-  {
-    pattern: /ollama|llama|local|localhost|127\.0\.0\.1/i,
-    label: 'local model',
-    source: 'local runtime',
-    inputUsdPerMillion: 0,
-    cachedInputUsdPerMillion: 0,
-    outputUsdPerMillion: 0,
-  },
-];
 const text = {
   appTitle: 'Codex 分身启动器',
-  brand: 'AI Clone Launcher',
+  brand: '本地分身工作台',
   dashboard: '控制台',
-  dashboardLead: '只保留创建、列表、设置入口和分身健康总览；本体与分身仍然严格分离。',
+  dashboardLead: '分身、同步包、更新和诊断状态集中在一个工作台。',
   healthTitle: '分身健康',
-  healthLead: '参考 Codex++ 诊断和 EchoBird 修复入口，先看状态，再执行同步/修复。',
+  healthLead: '先确认配置、同步包和启动状态，再执行修复。',
   healthBulkRefresh: '批量刷新状态',
   healthBulkVerify: '批量校验分身',
   healthBulkRepair: '批量同步/修复',
@@ -602,7 +197,7 @@ const text = {
   healthChecked: '已检查',
   healthMismatchWarning: 'mismatch / warning',
   syncManifestTitle: '同步包清单',
-  syncManifestLead: '参考 CC Switch 的统一资源视图，只展示稳定资源，运行态和账号配置保持排除。',
+  syncManifestLead: '稳定资源纳入白名单，运行态和账号配置保持隔离。',
   resourceLensTitle: 'MCP / Skills 资源透视',
   resourceLensLead: '只读聚焦同步包里的 MCP、skills、rules、AGENTS、memories 和安全配置片段；不写本体、不写分身。',
   resourceLensReady: 'Ready',
@@ -861,7 +456,7 @@ const text = {
   providerTest: '测试连接',
   providerTestHealthy: 'Provider 可用',
   providerTestDegraded: 'Provider 可用但较慢',
-  providerTestChatOnly: '仅 Chat Completions 可用',
+  providerTestChatOnly: 'Chat 桥接可用',
   providerTestFailed: 'Provider 测试失败',
   providerTestHint: '会发送一次低 token 请求；API Key 不会保存到模型预设或诊断报告。',
   providerModelsFetch: '拉取模型',
@@ -935,6 +530,126 @@ const text = {
   modelCatalogStandby: '待写入',
 } as const;
 
+const sessionPanelLabels: SessionPanelLabels = {
+  recentTitle: text.sessionRecentTitle,
+  countUnit: text.sessionCountUnit,
+  messageUnit: text.sessionMessageUnit,
+  noTimestamp: text.sessionNoTimestamp,
+  unknownProjectDir: text.sessionUnknownProjectDir,
+  noMatches: text.sessionNoMatches,
+  morePrefix: text.sessionMorePrefix,
+  moreSuffix: text.sessionMoreSuffix,
+  usageTitle: text.sessionUsageTitle,
+  usageTokensUnit: text.sessionUsageTokensUnit,
+  usageEventsUnit: text.sessionUsageEventsUnit,
+  usageInput: text.sessionUsageInput,
+  usageCache: text.sessionUsageCache,
+  usageOutputLabel: text.sessionUsageOutputLabel,
+  usageFiles: text.sessionUsageFiles,
+  usageRangeUnknown: text.sessionUsageRangeUnknown,
+  usageRangeSeparator: text.sessionUsageRangeSeparator,
+  usageModelInput: text.sessionUsageModelInput,
+  usageModelCache: text.sessionUsageModelCache,
+  usageModelOutput: text.sessionUsageModelOutput,
+  usageEmpty: text.sessionUsageEmpty,
+  costTitle: text.sessionCostTitle,
+  costUnpriced: text.sessionCostUnpriced,
+  costBillableInput: text.sessionCostBillableInput,
+  costCacheRate: text.sessionCostCacheRate,
+  costOutput: text.sessionCostOutput,
+  costEstimate: text.sessionCostEstimate,
+  costDisclaimer: text.sessionCostDisclaimer,
+};
+
+const instanceListSectionLabels: InstanceListSectionLabels = {
+  searchPlaceholder: text.sessionSearchPlaceholder,
+  refresh: text.refresh,
+};
+
+const instanceTableHeaderLabels: InstanceTableHeaderLabels = {
+  instance: text.instance,
+  profileDir: text.profileDir,
+  status: text.status,
+  history: text.history,
+  lastLaunch: text.lastLaunch,
+  actions: text.actions,
+};
+
+const instanceStatusLabels = {
+  running: text.running,
+  stopped: text.stopped,
+};
+
+const instancePrimaryActionLabels: InstancePrimaryActionLabels = {
+  start: text.start,
+  starting: text.starting,
+  stop: text.stop,
+  stopping: text.stopping,
+  historyRepair: text.historyRepair,
+  repairing: text.repairing,
+  delete: text.delete,
+  deleting: text.deleting,
+};
+
+const instanceMoreActionLabels: InstanceMoreActionLabels = {
+  cloneCapabilityEdit: text.cloneCapabilityEdit,
+  cloneCapabilityLead: text.cloneCapabilityLead,
+  cloneSnapshotExport: text.cloneSnapshotExport,
+  cloneSnapshotExportTitle: text.cloneSnapshotExportTitle,
+  cloneSnapshotUse: text.cloneSnapshotUse,
+  cloneSnapshotUseTitle: text.cloneSnapshotUseTitle,
+  historyCheck: text.historyCheck,
+  historyExportMarkdown: text.historyExportMarkdown,
+  historyExportMarkdownTitle: text.historyExportMarkdownTitle,
+  historyRefresh: text.historyRefresh,
+  openZed: text.openZed,
+  refreshing: text.refreshing,
+  resourceDiff: text.resourceDiff,
+  sessionListRefresh: text.sessionListRefresh,
+  sessionUsageRefresh: text.sessionUsageRefresh,
+  syncPackageAppliedCopy: text.syncPackageAppliedCopy,
+  syncPackageAppliedOpen: text.syncPackageAppliedOpen,
+  verifying: text.verifying,
+};
+
+const cloneCapabilityEditorLabels: CloneCapabilityEditorLabels = {
+  cancel: text.cloneCapabilityCancel,
+  lead: text.cloneCapabilityLead,
+  placeholder: text.goalPursuitPlaceholder,
+  save: text.cloneCapabilitySave,
+  title: text.cloneCapabilityTitle,
+  goalPursuit: text.goalPursuit,
+};
+
+const instanceCapabilityBadgeLabels: InstanceCapabilityBadgeLabels = {
+  launchScriptConfigured: text.launchScriptConfigured,
+  modelCatalog: text.modelCatalog,
+  goalPursuitConfigured: text.goalPursuitConfigured,
+  promptPackConfigured: text.promptPackConfigured,
+};
+
+const instanceHistoryCellLabels: InstanceHistoryCellLabels = {
+  sessionIndexLabel: text.sessionIndexLabel,
+  sessionFilesLabel: text.sessionFilesLabel,
+};
+
+const resourceLensLabels: ResourceLensLabels = {
+  title: text.resourceLensTitle,
+  lead: text.resourceLensLead,
+  ready: text.resourceLensReady,
+  issues: text.resourceLensIssues,
+  inventory: text.resourceLensInventory,
+  empty: text.resourceLensEmpty,
+  copy: text.resourceLensCopy,
+};
+
+const syncPackageMaintenanceLabels: SyncPackageMaintenanceLabels = {
+  copy: text.copy,
+  open: text.open,
+  preflightCheck: text.preflightCheck,
+  restoreBackup: text.syncPackageRestoreBackup,
+};
+
 const guideQuickStartSteps = [
   '到“设置”确认 Codex 路径；不确定时点“自动识别”。',
   '到“创建 Codex”填写 Base URL、API Key、分身名称和模型，然后创建。',
@@ -953,6 +668,106 @@ const guideTroubleshootingItems = [
   '分身内容缺失：按“提取/刷新本体 -> 同步/修复 -> 重启分身”处理。',
   '启动或同步异常：到“设置”底部的“诊断中心”刷新诊断，再查看最近日志。',
 ];
+
+const dashboardPageLabels: DashboardPageLabels = {
+  dashboard: text.dashboard,
+  dashboardLead: text.dashboardLead,
+  openCreate: text.openCreate,
+  openList: text.openList,
+  openSettings: text.openSettings,
+  cloneRunningCount: text.cloneRunningCount,
+  cloneTotalCount: text.cloneTotalCount,
+  packageFreshness: text.packageFreshness,
+  launcherVersion: text.launcherVersion,
+  healthTitle: text.healthTitle,
+  healthLead: text.healthLead,
+  healthChecked: text.healthChecked,
+  healthMismatchWarning: text.healthMismatchWarning,
+  healthBulkRefresh: text.healthBulkRefresh,
+  healthBulkVerify: text.healthBulkVerify,
+  healthBulkRepair: text.healthBulkRepair,
+  syncPackageTitle: text.syncPackageTitle,
+  syncManifestLead: text.syncManifestLead,
+  syncPackageManage: text.syncPackageManage,
+};
+
+const operationGuideLabels: OperationGuideLabels = {
+  guide: text.guide,
+  guideLead: text.guideLead,
+  syncPackageTitle: text.syncPackageTitle,
+  syncPackageStale: text.syncPackageStale,
+  syncPackageReady: text.syncPackageReady,
+  guidePackageMissing: text.guidePackageMissing,
+  guidePackageNotGenerated: text.guidePackageNotGenerated,
+  cloneTotalCount: text.cloneTotalCount,
+  guideManagedCloneOnly: text.guideManagedCloneOnly,
+  guidePackageSize: text.guidePackageSize,
+  guideFilesUnit: text.guideFilesUnit,
+  guideDirsUnit: text.guideDirsUnit,
+  guideQuickStart: text.guideQuickStart,
+  guideSafety: text.guideSafety,
+  guideTroubleshooting: text.guideTroubleshooting,
+  quickStartSteps: guideQuickStartSteps,
+  safetyRules: guideSafetyRules,
+  troubleshootingItems: guideTroubleshootingItems,
+};
+
+const providerFeedbackLabels: ProviderFeedbackLabels = {
+  providerAuditTitle: text.providerAuditTitle,
+  providerAuditLead: text.providerAuditLead,
+  providerModelsFetched: text.providerModelsFetched,
+  providerModelsEmpty: text.providerModelsEmpty,
+  providerModelsCountUnit: text.providerModelsCountUnit,
+  providerModelsHiddenPrefix: text.providerModelsHiddenPrefix,
+  providerModelsHiddenSuffix: text.providerModelsHiddenSuffix,
+  providerLatencyLabel: text.providerLatencyLabel,
+  providerTtfbLabel: text.providerTtfbLabel,
+  providerHealthCodexReady: text.providerHealthCodexReady,
+  providerNeedsRelay: text.providerNeedsRelay,
+  providerTestHealthy: text.providerTestHealthy,
+  providerTestDegraded: text.providerTestDegraded,
+  providerTestChatOnly: text.providerTestChatOnly,
+  providerTestFailed: text.providerTestFailed,
+};
+
+const instanceListLabels: InstanceListLabels = {
+  section: instanceListSectionLabels,
+  tableHeader: instanceTableHeaderLabels,
+  status: instanceStatusLabels,
+  primaryAction: instancePrimaryActionLabels,
+  moreAction: instanceMoreActionLabels,
+  capabilityEditor: cloneCapabilityEditorLabels,
+  capabilityBadge: instanceCapabilityBadgeLabels,
+  historyCell: instanceHistoryCellLabels,
+  sessionPanel: sessionPanelLabels,
+  moreActions: text.moreActions,
+  syncPackageApplyReady: text.syncPackageApplyReady,
+  sessionDetails: text.sessionDetails,
+  sessionUsageTitle: text.sessionUsageTitle,
+};
+
+const instanceListHelpers: InstanceListHelpers = {
+  formatTime,
+  formatShortPath,
+  formatTokenCount,
+  formatUsd,
+  historySummary,
+  syncPackageAppliedMarkerPath,
+  syncPackageAppliedSummary,
+  syncPackageAppliedFreshness,
+  syncPackageResourceDiffHint,
+  cloneReadinessSummary,
+};
+
+const syncPackageReportDeps: SyncPackageReportDeps = {
+  formatBytes,
+  formatTime,
+  syncPackageStateLabel,
+};
+
+const syncPackageResourceDiffReportDeps: SyncPackageResourceDiffReportDeps = {
+  formatTime,
+};
 
 function defaultCloneValues(name: string): CloneFormValues {
   return {
@@ -973,7 +788,6 @@ function defaultCloneValues(name: string): CloneFormValues {
     launchAfterCreate: true,
   };
 }
-
 function defaultGitWorktreeValues(): GitWorktreeFormValues {
   return {
     repoDir: '',
@@ -983,14 +797,6 @@ function defaultGitWorktreeValues(): GitWorktreeFormValues {
     worktreeDir: '',
     fetchBeforeCreate: true,
   };
-}
-
-function isApiKeyAccount(account: CodexAccount): boolean {
-  return Boolean(account.openai_api_key) || account.auth_mode === 'api_key';
-}
-
-function accountLabel(account: CodexAccount): string {
-  return account.account_name || account.email || account.id;
 }
 
 function formatTime(timestamp?: number | null): string {
@@ -1032,70 +838,6 @@ function formatUsd(value?: number | null): string {
   return `$${amount.toFixed(2)}`;
 }
 
-function sessionUsagePricingForModel(model: string): SessionUsagePricingRule | null {
-  const normalized = model.trim();
-  if (!normalized) return null;
-  return sessionUsagePricingRules.find((rule) => rule.pattern.test(normalized)) ?? null;
-}
-
-function estimateSessionUsageModelCost(model: CodexSessionUsageModelSummary): SessionUsageCostEstimate {
-  const pricing = sessionUsagePricingForModel(model.model);
-  const inputTokens = Math.max(0, model.inputTokens ?? 0);
-  const cachedInputTokens = Math.min(Math.max(0, model.cachedInputTokens ?? 0), inputTokens);
-  const billableInputTokens = Math.max(0, inputTokens - cachedInputTokens);
-  const outputTokens = Math.max(0, model.outputTokens ?? 0);
-  if (!pricing) {
-    return {
-      model: model.model,
-      priced: false,
-      pricingLabel: text.sessionCostUnpriced,
-      pricingSource: 'none',
-      billableInputTokens,
-      cachedInputTokens,
-      outputTokens,
-      totalTokens: Math.max(0, model.totalTokens ?? 0),
-      inputCostUsd: 0,
-      cachedInputCostUsd: 0,
-      outputCostUsd: 0,
-      totalCostUsd: 0,
-    };
-  }
-  const inputCostUsd = (billableInputTokens / 1_000_000) * pricing.inputUsdPerMillion;
-  const cachedInputCostUsd = (cachedInputTokens / 1_000_000) * pricing.cachedInputUsdPerMillion;
-  const outputCostUsd = (outputTokens / 1_000_000) * pricing.outputUsdPerMillion;
-  return {
-    model: model.model,
-    priced: true,
-    pricingLabel: pricing.label,
-    pricingSource: pricing.source,
-    billableInputTokens,
-    cachedInputTokens,
-    outputTokens,
-    totalTokens: Math.max(0, model.totalTokens ?? 0),
-    inputCostUsd,
-    cachedInputCostUsd,
-    outputCostUsd,
-    totalCostUsd: inputCostUsd + cachedInputCostUsd + outputCostUsd,
-  };
-}
-
-function sessionUsageCostSummary(usage: CodexSessionUsageSummary): SessionUsageCostSummary {
-  const byModel = usage.byModel.map((model) => estimateSessionUsageModelCost(model));
-  const totalInputTokens = Math.max(0, usage.inputTokens ?? 0);
-  const cachedInputTokens = Math.min(Math.max(0, usage.cachedInputTokens ?? 0), totalInputTokens);
-  const billableInputTokens = Math.max(0, totalInputTokens - cachedInputTokens);
-  return {
-    totalCostUsd: byModel.reduce((sum, item) => sum + item.totalCostUsd, 0),
-    pricedModels: byModel.filter((item) => item.priced).length,
-    unpricedModels: byModel.filter((item) => !item.priced).length,
-    billableInputTokens,
-    cachedInputTokens,
-    outputTokens: Math.max(0, usage.outputTokens ?? 0),
-    cacheHitRate: totalInputTokens ? cachedInputTokens / totalInputTokens : 0,
-    byModel,
-  };
-}
-
 function cloneModelCatalogModels(
   currentModel: string,
   providerModelsResult?: CodexProviderModelsFetchResult | null,
@@ -1112,13 +854,6 @@ function cloneModelCatalogModels(
     if (models.length >= CLONE_MODEL_CATALOG_MAX_MODELS) break;
   }
   return models;
-}
-
-function providerTestStatusLabel(result: CodexProviderConnectionTestResult): string {
-  if (result.status === 'healthy') return text.providerTestHealthy;
-  if (result.status === 'degraded') return text.providerTestDegraded;
-  if (result.status === 'chatOnly') return text.providerTestChatOnly;
-  return text.providerTestFailed;
 }
 
 function normalizeProviderAuditBaseUrl(value: string): string {
@@ -1233,7 +968,7 @@ function buildProviderConfigAudit(input: {
           ? 'warning'
           : 'ok'
         : 'warning',
-      label: providerTestStatusLabel(input.providerTestResult),
+      label: providerTestStatusLabel(input.providerTestResult, providerFeedbackLabels),
       detail: input.providerTestResult.message,
     });
   } else {
@@ -1413,19 +1148,6 @@ function writeProviderHealthHistory(records: ProviderHealthRecord[]) {
   localStorage.setItem(PROVIDER_HEALTH_HISTORY_KEY, JSON.stringify(compactProviderHealthHistory(records)));
 }
 
-function providerHealthLabel(record: ProviderHealthRecord | null): string {
-  if (!record) return text.providerHealthEmpty;
-  if (record.codexReady) return record.status === 'degraded' ? text.providerTestDegraded : text.providerHealthCodexReady;
-  if (record.ok) return text.providerHealthChatOnly;
-  return text.providerHealthFailed;
-}
-
-function readLocalStorageBoolean(key: string, fallback: boolean): boolean {
-  const value = localStorage.getItem(key);
-  if (value === null) return fallback;
-  return value === 'true';
-}
-
 function readThemeMode(): ThemeMode {
   const value = localStorage.getItem(THEME_MODE_KEY);
   return value === 'dark' || value === 'light' || value === 'system' ? value : 'system';
@@ -1592,30 +1314,6 @@ function normalizeProviderBaseUrl(value: string): string {
   }
 }
 
-function diagnoseUpdateError(error: unknown): string {
-  const detail = error instanceof Error ? error.message : String(error);
-  const lower = detail.toLowerCase();
-  if (lower.includes('404') || lower.includes('not found') || lower.includes('latest.json')) {
-    return text.updateLatestJsonMissing;
-  }
-  if (lower.includes('signature') || lower.includes('pubkey') || lower.includes('public key')) {
-    return text.updateSignatureHint;
-  }
-  if (lower.includes('invoke') || lower.includes('__tauri') || lower.includes('tauri')) {
-    return text.updateDesktopOnlyHint;
-  }
-  if (
-    lower.includes('network') ||
-    lower.includes('timeout') ||
-    lower.includes('dns') ||
-    lower.includes('proxy') ||
-    lower.includes('failed to fetch')
-  ) {
-    return text.updateNetworkHint;
-  }
-  return detail;
-}
-
 function historySummary(status?: CodexHistoryStatus | null): string {
   if (!status) return '未检测';
   const model = status.currentModel ? ` / ${status.currentModel}` : '';
@@ -1631,797 +1329,41 @@ function creationHistoryMessage(instance: InstanceProfile): string {
   return `${instance.name}，已同步 ${status.threadCount} 条线程，mismatch ${status.mismatchCount}，${verify}`;
 }
 
-function joinLocalPath(base: string, leaf: string): string {
-  const trimmed = base.trim().replace(/[\\/]+$/, '');
-  if (!trimmed) return leaf;
-  const separator = trimmed.includes('\\') ? '\\' : '/';
-  return `${trimmed}${separator}${leaf}`;
-}
+const syncPackageStatusLabels: SyncPackageStatusLabels = {
+  missing: text.syncPackageMissing,
+  stale: text.syncPackageStale,
+  ready: text.syncPackageReady,
+  currentUnknown: text.syncPackageCurrentUnknown,
+  applyUnknown: text.syncPackageApplyUnknown,
+  applyMissing: text.syncPackageApplyMissing,
+  currentMissing: text.syncPackageCurrentMissing,
+  appliedMissing: text.syncPackageAppliedMissing,
+  currentApplied: text.syncPackageCurrentApplied,
+};
 
-function syncPackageAppliedMarkerPath(
-  instance: InstanceProfile,
-  status?: CodexHistoryStatus | null,
-): string {
-  const codexHome = status?.codexHome || instance.userDataDir;
-  return codexHome ? joinLocalPath(codexHome, APPLIED_SYNC_PACKAGE_MARKER_FILE) : '';
-}
-
-function syncPackageAppliedResourceRatio(marker?: CodexSyncPackageAppliedMarker | null): string {
-  if (!marker) return '0/0 类';
-  const readyResources = marker.resources?.filter((resource) => resource.status === 'ready').length ?? 0;
-  const resourceCount = marker.resources?.length ?? 0;
-  return `${readyResources}/${resourceCount} 类`;
-}
+const syncPackageFormatters = {
+  formatTime,
+  formatBytes,
+};
 
 function syncPackageAppliedSummary(status?: CodexHistoryStatus | null): string {
-  const marker = status?.syncPackageApplied;
-  if (!marker) return '同步包应用：未记录';
-  const stale = marker.staleWhenApplied ? ' / 应用时本体已有更新' : '';
-  return `同步包应用：${formatTime(marker.appliedAt)} / ${formatBytes(marker.copiedBytes ?? 0)} / ${syncPackageAppliedResourceRatio(marker)}${stale}`;
+  return buildSyncPackageAppliedSummary(status, syncPackageFormatters);
 }
 
 function syncPackageAppliedFreshness(
   status: CodexHistoryStatus | null | undefined,
   currentPackage: CodexSyncPackageStatus | null,
-): { label: string; tone: 'ok' | 'warning' | 'muted'; title: string } {
-  if (!currentPackage) {
-    return {
-      label: text.syncPackageCurrentUnknown,
-      tone: 'muted',
-      title: text.syncPackageApplyUnknown,
-    };
-  }
-  if (!currentPackage.exists) {
-    return {
-      label: text.syncPackageCurrentUnknown,
-      tone: 'muted',
-      title: text.syncPackageApplyMissing,
-    };
-  }
-  const marker = status?.syncPackageApplied;
-  if (!marker) {
-    return {
-      label: text.syncPackageCurrentMissing,
-      tone: 'warning',
-      title: text.syncPackageAppliedMissing,
-    };
-  }
-  const markerCreatedAt = marker.packageCreatedAt ?? 0;
-  const currentCreatedAt = currentPackage.createdAt ?? 0;
-  if (markerCreatedAt && currentCreatedAt && markerCreatedAt + 1_000 < currentCreatedAt) {
-    return {
-      label: text.syncPackageCurrentMissing,
-      tone: 'warning',
-      title: `分身应用的是 ${formatTime(markerCreatedAt)} 的同步包；当前同步包是 ${formatTime(currentCreatedAt)}。`,
-    };
-  }
-  const stale = marker.staleWhenApplied ? '；应用时本体已有更新' : '';
-  return {
-    label: text.syncPackageCurrentApplied,
-    tone: marker.staleWhenApplied ? 'warning' : 'ok',
-    title: `${syncPackageAppliedSummary(status)}${stale}`,
-  };
-}
-
-type SyncPackageResourceDiffHint = {
-  label: string;
-  tone: 'ok' | 'warning' | 'muted';
-  title: string;
-};
-
-function syncPackageResourceFingerprint(resource: CodexSyncPackageResourceSummary): string {
-  const inventory = [...(resource.items ?? [])].sort().join(',');
-  return [
-    resource.status,
-    resource.fileCount ?? 0,
-    resource.directoryCount ?? 0,
-    resource.bytes ?? 0,
-    inventory,
-  ].join('|');
-}
-
-function syncPackageResourceDiffHint(
-  status: CodexHistoryStatus | null | undefined,
-  currentPackage: CodexSyncPackageStatus | null,
-): SyncPackageResourceDiffHint {
-  const marker = status?.syncPackageApplied;
-  if (!currentPackage?.exists || !currentPackage.resources?.length) {
-    return {
-      label: '资源差异待刷新',
-      tone: 'muted',
-      title: '当前同步包资源清单不可用；先刷新/提取本体同步包。',
-    };
-  }
-  if (!marker?.resources?.length) {
-    return {
-      label: '资源差异待同步',
-      tone: 'warning',
-      title: '这个分身还没有应用记录；执行同步/修复后会写入 clone-sync-package-applied.json。',
-    };
-  }
-
-  const appliedById = new Map(marker.resources.map((resource) => [resource.id, resource]));
-  const changed: string[] = [];
-  const missing: string[] = [];
-  const newResources: string[] = [];
-
-  for (const resource of currentPackage.resources) {
-    const applied = appliedById.get(resource.id);
-    if (!applied) {
-      newResources.push(resource.label);
-      continue;
-    }
-    if (syncPackageResourceFingerprint(applied) !== syncPackageResourceFingerprint(resource)) {
-      changed.push(resource.label);
-    }
-  }
-
-  const currentIds = new Set(currentPackage.resources.map((resource) => resource.id));
-  for (const resource of marker.resources) {
-    if (!currentIds.has(resource.id)) missing.push(resource.label);
-  }
-
-  const totalDiffs = changed.length + missing.length + newResources.length;
-  if (!totalDiffs) {
-    return {
-      label: '资源清单一致',
-      tone: 'ok',
-      title: '当前同步包资源清单与这个分身上次应用记录一致。',
-    };
-  }
-
-  const detail = [
-    changed.length ? `变化：${changed.join('、')}` : '',
-    newResources.length ? `新增：${newResources.join('、')}` : '',
-    missing.length ? `旧项：${missing.join('、')}` : '',
-  ]
-    .filter(Boolean)
-    .join('；');
-
-  return {
-    label: `资源差异 ${totalDiffs} 类`,
-    tone: 'warning',
-    title: `${detail}。如需要把这些差异应用到分身，请手动执行同步/修复。`,
-  };
+): SyncPackageFreshness {
+  return buildSyncPackageAppliedFreshness(
+    status,
+    currentPackage,
+    syncPackageStatusLabels,
+    syncPackageFormatters,
+  );
 }
 
 function syncPackageStateLabel(status: CodexSyncPackageStatus | null): string {
-  if (!status?.exists) return text.syncPackageMissing;
-  return status.stale ? text.syncPackageStale : text.syncPackageReady;
-}
-
-function legacySyncPackageResourceItems(status: CodexSyncPackageStatus | null) {
-  const copied = status?.exists ? `${(status.fileCount ?? 0).toLocaleString()} 文件 / ${(status.directoryCount ?? 0).toLocaleString()} 目录` : '尚未提取';
-  const skippedCount = status?.skipped?.length ?? 0;
-  return [
-    { label: '聊天历史', value: copied, detail: 'sessions、archived_sessions、session_index、history.jsonl' },
-    { label: '技能规则', value: status?.exists ? '已纳入' : '待提取', detail: 'skills、rules、AGENTS.md' },
-    { label: 'MCP 与记忆', value: status?.exists ? '已纳入' : '待提取', detail: 'mcp-servers、memories、sqlite、vendor_imports' },
-    { label: '排除项', value: skippedCount ? `${skippedCount} 项` : '固定排除', detail: 'auth、credentials、plugins、cache、log、.tmp、额度配置' },
-  ];
-}
-
-type SyncPackageResourceItem = {
-  id?: string;
-  label: string;
-  value: string;
-  detail: string;
-  status?: string;
-  applyMode?: string;
-  inventory?: string[];
-};
-
-const resourceLensResourceIds = new Set(['skills', 'mcp', 'memory', 'config', 'goals']);
-const resourceLensKeywords = [
-  'skill',
-  'skills',
-  'mcp',
-  'memory',
-  'memories',
-  'rules',
-  'agents',
-  'agents.md',
-  'config',
-  'goals',
-  'prompts',
-  '技能',
-  '记忆',
-  '规则',
-  '配置',
-  '目标',
-];
-
-function syncPackageResourceStatusLabel(status?: string): string {
-  switch (status) {
-    case 'ready':
-      return '已纳入';
-    case 'partial':
-      return '部分纳入';
-    case 'error':
-      return '有错误';
-    case 'missing':
-      return '未纳入';
-    default:
-      return '待提取';
-  }
-}
-
-function syncPackageResourceClass(status?: string): string {
-  return status ? `sync-resource ${status}` : 'sync-resource';
-}
-
-function syncPackageResourceItems(status: CodexSyncPackageStatus | null): SyncPackageResourceItem[] {
-  if (!status?.resources?.length) return legacySyncPackageResourceItems(status);
-  return status.resources.map((resource) => {
-    const fileCount = (resource.fileCount ?? 0).toLocaleString();
-    const directoryCount = (resource.directoryCount ?? 0).toLocaleString();
-    const issueParts = [
-      ...(resource.errors ?? []).slice(0, 2).map((item) => `错误：${item}`),
-      resource.missing?.length ? `缺少：${resource.missing.slice(0, 4).join('、')}` : '',
-    ].filter(Boolean);
-    return {
-      id: resource.id,
-      label: resource.label,
-      value:
-        resource.status === 'missing'
-          ? syncPackageResourceStatusLabel(resource.status)
-          : `${syncPackageResourceStatusLabel(resource.status)} · ${fileCount} 文件 / ${directoryCount} 目录 · ${formatBytes(resource.bytes ?? 0)}`,
-      detail: [resource.detail, ...issueParts].filter(Boolean).join('；'),
-      status: resource.status,
-      applyMode: resource.applyMode,
-      inventory: resource.items ?? [],
-    };
-  });
-}
-
-type ResourceStatusFilter = 'all' | 'ready' | 'partial' | 'issues' | 'missing';
-
-const resourceStatusFilters: ResourceStatusFilter[] = ['all', 'ready', 'partial', 'issues', 'missing'];
-
-function resourceStatusFilterLabel(filter: ResourceStatusFilter): string {
-  switch (filter) {
-    case 'ready':
-      return 'Ready';
-    case 'partial':
-      return 'Partial';
-    case 'issues':
-      return 'Issues';
-    case 'missing':
-      return 'Missing';
-    default:
-      return 'All';
-  }
-}
-
-function resourceMatchesStatusFilter(item: SyncPackageResourceItem, filter: ResourceStatusFilter): boolean {
-  switch (filter) {
-    case 'ready':
-      return item.status === 'ready';
-    case 'partial':
-      return item.status === 'partial';
-    case 'issues':
-      return item.status === 'partial' || item.status === 'error';
-    case 'missing':
-      return item.status === 'missing';
-    default:
-      return true;
-  }
-}
-
-function resourceMatchesQuery(item: SyncPackageResourceItem, query: string): boolean {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) return true;
-  return [
-    item.label,
-    item.value,
-    item.detail,
-    item.status ?? '',
-    item.applyMode ?? '',
-    ...(item.inventory ?? []),
-  ]
-    .join(' ')
-    .toLowerCase()
-    .includes(normalized);
-}
-
-function filteredSyncPackageResources(
-  resources: SyncPackageResourceItem[],
-  query: string,
-  statusFilter: ResourceStatusFilter,
-): SyncPackageResourceItem[] {
-  return resources.filter(
-    (item) => resourceMatchesStatusFilter(item, statusFilter) && resourceMatchesQuery(item, query),
-  );
-}
-
-type ResourceLensStats = {
-  total: number;
-  ready: number;
-  issues: number;
-  inventory: number;
-};
-
-function resourceLensSearchText(item: SyncPackageResourceItem): string {
-  return [
-    item.id ?? '',
-    item.label,
-    item.value,
-    item.detail,
-    item.status ?? '',
-    item.applyMode ?? '',
-    ...(item.inventory ?? []),
-  ]
-    .join(' ')
-    .toLowerCase();
-}
-
-function isResourceLensItem(item: SyncPackageResourceItem): boolean {
-  const id = item.id?.toLowerCase();
-  if (id && resourceLensResourceIds.has(id)) return true;
-  const searchable = resourceLensSearchText(item);
-  return resourceLensKeywords.some((keyword) => searchable.includes(keyword));
-}
-
-function resourceLensItems(resources: SyncPackageResourceItem[]): SyncPackageResourceItem[] {
-  return resources.filter(isResourceLensItem);
-}
-
-function resourceLensStats(items: SyncPackageResourceItem[]): ResourceLensStats {
-  return items.reduce<ResourceLensStats>(
-    (stats, item) => {
-      const inventoryCount = item.inventory?.length ?? 0;
-      return {
-        total: stats.total + 1,
-        ready: stats.ready + (item.status === 'ready' ? 1 : 0),
-        issues: stats.issues + (item.status === 'ready' ? 0 : 1),
-        inventory: stats.inventory + inventoryCount,
-      };
-    },
-    { total: 0, ready: 0, issues: 0, inventory: 0 },
-  );
-}
-
-function ResourceInventoryChips(props: { items?: string[]; label?: string }) {
-  const items = props.items ?? [];
-  if (!items.length) return null;
-  const visible = items.slice(0, 6);
-  const hidden = items.slice(visible.length);
-  async function copyInventory() {
-    try {
-      await navigator.clipboard.writeText([props.label, ...items].filter(Boolean).join('\n'));
-    } catch (error) {
-      reportError(error, { area: 'sync-package', action: 'copy-resource-inventory', detail: props.label });
-    }
-  }
-  return (
-    <div className="resource-inventory">
-      <button className="resource-inventory-copy" onClick={() => void copyInventory()} title="Copy resource inventory" type="button">
-        <Copy size={12} />
-      </button>
-      {visible.map((item) => (
-        <code key={item}>{item}</code>
-      ))}
-      {hidden.length ? (
-        <details className="resource-inventory-more">
-          <summary>
-            <code>+{hidden.length}</code>
-          </summary>
-          <div>
-            {hidden.map((item) => (
-              <code key={item}>{item}</code>
-            ))}
-          </div>
-        </details>
-      ) : null}
-    </div>
-  );
-}
-
-function SyncPackageResourceList(props: {
-  resources: SyncPackageResourceItem[];
-  className: 'resource-list' | 'sync-package-resources';
-}) {
-  const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<ResourceStatusFilter>('all');
-  const visibleResources = filteredSyncPackageResources(props.resources, query, statusFilter);
-
-  return (
-    <div className="sync-resource-explorer">
-      <div className="resource-filter-toolbar">
-        <label className="resource-filter-search">
-          <Search size={14} />
-          <input
-            aria-label="Search sync package resources"
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Search resources"
-            type="search"
-            value={query}
-          />
-        </label>
-        <div className="resource-filter-row">
-          {resourceStatusFilters.map((filter) => (
-            <button
-              className={filter === statusFilter ? 'active' : undefined}
-              key={filter}
-              onClick={() => setStatusFilter(filter)}
-              type="button"
-            >
-              {resourceStatusFilterLabel(filter)}
-            </button>
-          ))}
-        </div>
-        <span className="resource-filter-count">
-          {visibleResources.length}/{props.resources.length}
-        </span>
-      </div>
-      <div className={props.className}>
-        {visibleResources.map((item) => (
-          <div className={syncPackageResourceClass(item.status)} key={item.label}>
-            <strong>{item.label}</strong>
-            <span>{item.value}</span>
-            <small>{item.detail}</small>
-            <ResourceInventoryChips items={item.inventory} label={item.label} />
-            {item.applyMode ? <small className="resource-apply-mode">{item.applyMode}</small> : null}
-          </div>
-        ))}
-        {!visibleResources.length ? (
-          <div className="sync-resource resource-empty">
-            <strong>No matching resources</strong>
-            <span>0/{props.resources.length}</span>
-            <small>Clear the search or switch resource status filter.</small>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ResourceLensPanel(props: {
-  resources: SyncPackageResourceItem[];
-  busy?: string;
-  compact?: boolean;
-  onCopy?: () => unknown;
-}) {
-  const items = resourceLensItems(props.resources);
-  const stats = resourceLensStats(items);
-
-  return (
-    <div className={props.compact ? 'resource-lens-panel compact' : 'resource-lens-panel'}>
-      <div className="resource-lens-header">
-        <div>
-          <strong>
-            <BookOpen size={15} />
-            {text.resourceLensTitle}
-          </strong>
-          <span>{text.resourceLensLead}</span>
-        </div>
-        {props.onCopy ? (
-          <button disabled={Boolean(props.busy)} onClick={() => void props.onCopy?.()} type="button">
-            <Copy size={14} />
-            {text.resourceLensCopy}
-          </button>
-        ) : null}
-      </div>
-      <div className="resource-lens-stats">
-        <span>
-          <strong>{`${stats.ready}/${stats.total}`}</strong>
-          <small>{text.resourceLensReady}</small>
-        </span>
-        <span>
-          <strong>{stats.issues}</strong>
-          <small>{text.resourceLensIssues}</small>
-        </span>
-        <span>
-          <strong>{stats.inventory}</strong>
-          <small>{text.resourceLensInventory}</small>
-        </span>
-      </div>
-      {items.length ? (
-        <div className="resource-lens-grid">
-          {items.map((item) => (
-            <div className={`resource-lens-item ${item.status ?? 'unknown'}`} key={item.id ?? item.label}>
-              <div>
-                <strong>{item.label}</strong>
-                <span>{item.value}</span>
-              </div>
-              <small>{item.detail}</small>
-              <ResourceInventoryChips items={item.inventory} label={item.label} />
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="resource-lens-empty">{text.resourceLensEmpty}</div>
-      )}
-    </div>
-  );
-}
-
-function syncPackageIncludedSummary(status: CodexSyncPackageStatus | null): string {
-  if (!status?.exists) return '待提取';
-  const entryCount = status.entries?.length ?? 0;
-  return `${entryCount.toLocaleString()} 条 manifest / ${formatBytes(status.copiedBytes ?? 0)}`;
-}
-
-function syncPackageExcludedSummary(status: CodexSyncPackageStatus | null): string {
-  const skippedCount = status?.skipped?.length ?? 0;
-  return skippedCount ? `${skippedCount.toLocaleString()} 条 skipped` : 'auth、credentials、plugins、cache、log 固定排除';
-}
-
-function syncPackageEntryLabel(entry: CodexSyncPackageStatus['entries'][number]): string {
-  const size = entry.bytes ? formatBytes(entry.bytes) : entry.kind;
-  const state = entry.status ? `${entry.status}` : 'copied';
-  const files = entry.fileCount ?? (entry.kind === 'file' && entry.status === 'copied' ? 1 : 0);
-  const directories = entry.directoryCount ?? (entry.kind === 'directory' && entry.status === 'copied' ? 1 : 0);
-  const counts =
-    entry.kind === 'directory'
-      ? `${files.toLocaleString()} 文件 / ${directories.toLocaleString()} 目录`
-      : files
-        ? `${files.toLocaleString()} 文件`
-        : entry.kind;
-  return `${state} / ${size} / ${counts}`;
-}
-
-function syncPackageEntryPreview(status: CodexSyncPackageStatus | null) {
-  if (!status?.entries?.length) return [];
-  const preferred = ['sessions', 'archived_sessions', 'session_index.jsonl', 'history.jsonl', 'skills', 'mcp-servers', 'memories', 'AGENTS.md'];
-  const entries = [...status.entries];
-  entries.sort((left, right) => {
-    const leftRank = preferred.findIndex((item) => left.path === item || left.path.startsWith(`${item}/`));
-    const rightRank = preferred.findIndex((item) => right.path === item || right.path.startsWith(`${item}/`));
-    const normalizedLeft = leftRank === -1 ? preferred.length : leftRank;
-    const normalizedRight = rightRank === -1 ? preferred.length : rightRank;
-    if (normalizedLeft !== normalizedRight) return normalizedLeft - normalizedRight;
-    return left.path.localeCompare(right.path);
-  });
-  return entries.slice(0, 8);
-}
-
-function buildSyncPackageResourceReport(status: CodexSyncPackageStatus | null): string {
-  const resources = syncPackageResourceItems(status);
-  return [
-    '# Codex Sync Package Resources',
-    `generatedAt: ${new Date().toISOString()}`,
-    `exists: ${status?.exists ? 'yes' : 'no'}`,
-    `state: ${syncPackageStateLabel(status)}`,
-    `stale: ${status?.stale ? 'yes' : 'no'}`,
-    `packagePath: ${status?.packagePath ?? 'unknown'}`,
-    `manifestPath: ${status?.manifestPath ?? 'unknown'}`,
-    `source: ${status?.source ?? 'unknown'}`,
-    `createdAt: ${formatTime(status?.createdAt)}`,
-    `sourceModifiedAt: ${formatTime(status?.sourceModifiedAt)}`,
-    `files: ${status?.fileCount ?? 0}`,
-    `directories: ${status?.directoryCount ?? 0}`,
-    `bytes: ${status?.copiedBytes ?? 0} (${formatBytes(status?.copiedBytes ?? 0)})`,
-    '',
-    '## Resources',
-    ...resources.flatMap((resource) => [
-      `- ${resource.label}: ${resource.status ?? 'unknown'} | ${resource.value}`,
-      `  applyMode: ${resource.applyMode || 'unknown'}`,
-      `  detail: ${resource.detail || 'none'}`,
-      `  inventory: ${resource.inventory?.length ? resource.inventory.join(', ') : 'none'}`,
-    ]),
-    '',
-    '## Warnings',
-    ...((status?.warnings ?? []).length ? (status?.warnings ?? []).map((item) => `- ${item}`) : ['- none']),
-    '',
-    '## Skipped',
-    ...((status?.skipped ?? []).length ? (status?.skipped ?? []).map((item) => `- ${item}`) : ['- none']),
-  ].join('\n');
-}
-
-function buildResourceLensReport(status: CodexSyncPackageStatus | null): string {
-  const resources = resourceLensItems(syncPackageResourceItems(status));
-  const stats = resourceLensStats(resources);
-  return [
-    '# Codex MCP Skills Resource Lens',
-    `generatedAt: ${new Date().toISOString()}`,
-    `exists: ${status?.exists ? 'yes' : 'no'}`,
-    `state: ${syncPackageStateLabel(status)}`,
-    `packagePath: ${status?.packagePath ?? 'unknown'}`,
-    `manifestPath: ${status?.manifestPath ?? 'unknown'}`,
-    `summary: ready=${stats.ready}/${stats.total} | issues=${stats.issues} | inventory=${stats.inventory}`,
-    '',
-    '## Focus Resources',
-    ...(resources.length
-      ? resources.flatMap((resource) => [
-          `- ${resource.label}: ${resource.status ?? 'unknown'} | ${resource.value}`,
-          `  id: ${resource.id || 'legacy'}`,
-          `  applyMode: ${resource.applyMode || 'unknown'}`,
-          `  detail: ${resource.detail || 'none'}`,
-          `  inventory: ${resource.inventory?.length ? resource.inventory.join(', ') : 'none'}`,
-        ])
-      : ['- none']),
-    '',
-    '## Boundary',
-    '- readOnly: yes',
-    '- writesSourceProfile: no',
-    '- writesCloneProfile: no',
-    '- excluded: auth.json, .credentials.json, account tokens, quota state, plugins, cache, logs, tmp',
-  ].join('\n');
-}
-
-function buildSyncPackageBackupReport(backups: CodexSyncPackageBackupSummary[]): string {
-  return [
-    '# Codex Sync Package Backup Timeline',
-    `generatedAt: ${new Date().toISOString()}`,
-    `count: ${backups.length}`,
-    '',
-    ...(
-      backups.length
-        ? backups.flatMap((backup, index) => [
-            `## ${index + 1}. ${backup.id}`,
-            `status: ${backup.status}`,
-            `backupCreatedAt: ${formatTime(backup.backupCreatedAt)}`,
-            `packageCreatedAt: ${formatTime(backup.packageCreatedAt)}`,
-            `backupPath: ${backup.backupPath}`,
-            `packagePath: ${backup.packagePath}`,
-            `manifestPath: ${backup.manifestPath}`,
-            `source: ${backup.source ?? 'unknown'}`,
-            `files: ${backup.fileCount}`,
-            `directories: ${backup.directoryCount}`,
-            `bytes: ${backup.copiedBytes} (${formatBytes(backup.copiedBytes)})`,
-            `resources: ${backup.readyResourceCount}/${backup.resourceCount}`,
-            `warnings: ${backup.warnings.length ? backup.warnings.join(' / ') : 'none'}`,
-            `error: ${backup.error || 'none'}`,
-            '',
-          ])
-        : ['- no sync package backups']
-    ),
-  ].join('\n');
-}
-
-function buildSyncPackagePreflightReport(preflight: CodexSyncPackagePreflightReport | null): string {
-  return [
-    '# Codex Sync Package Preflight',
-    `generatedAt: ${new Date().toISOString()}`,
-    `status: ${preflight?.status ?? 'not checked'}`,
-    `readyToApply: ${preflight?.readyToApply ? 'yes' : 'no'}`,
-    `checkedAt: ${formatTime(preflight?.checkedAt)}`,
-    `packageCreatedAt: ${formatTime(preflight?.packageCreatedAt)}`,
-    `stale: ${preflight?.stale ? 'yes' : 'no'}`,
-    `packagePath: ${preflight?.packagePath ?? 'unknown'}`,
-    `manifestPath: ${preflight?.manifestPath ?? 'unknown'}`,
-    `source: ${preflight?.source ?? 'unknown'}`,
-    `entriesChecked: ${preflight?.entriesChecked ?? 0}`,
-    `resourcesChecked: ${preflight?.resourcesChecked ?? 0}`,
-    `errors: ${preflight?.errorCount ?? 0}`,
-    `warnings: ${preflight?.warningCount ?? 0}`,
-    '',
-    '## Boundary',
-    '- Source module: extracts or refreshes the sync package only.',
-    '- Clone module: applies an existing package only after manual Sync/Repair.',
-    '- Preflight is read-only; it does not restore backups or copy live source profile data.',
-    '',
-    '## Checks',
-    ...((preflight?.checks ?? []).length
-      ? (preflight?.checks ?? []).map((check) =>
-          `- [${check.status}] ${check.label}: ${check.detail}${check.action ? ` | action: ${check.action}` : ''}`,
-        )
-      : ['- no preflight checks have been run']),
-    '',
-    '## Unsafe Paths',
-    ...((preflight?.unsafePaths ?? []).length ? (preflight?.unsafePaths ?? []).map((item) => `- ${item}`) : ['- none']),
-  ].join('\n');
-}
-
-function syncPackageResourceSummaryLine(resource: CodexSyncPackageResourceSummary): string {
-  return [
-    `${resource.label} [${resource.id}]`,
-    `status=${resource.status || 'unknown'}`,
-    `files=${resource.fileCount ?? 0}`,
-    `dirs=${resource.directoryCount ?? 0}`,
-    `bytes=${resource.bytes ?? 0}`,
-    `applyMode=${resource.applyMode || 'unknown'}`,
-    `paths=${resource.paths?.join(', ') || 'none'}`,
-    `missing=${resource.missing?.join(', ') || 'none'}`,
-    `errors=${resource.errors?.join(', ') || 'none'}`,
-    `items=${resource.items?.join(', ') || 'none'}`,
-  ].join(' | ');
-}
-
-function buildSyncPackageResourceDiffReport(input: {
-  instance: InstanceProfile;
-  history?: CodexHistoryStatus | null;
-  currentPackage: CodexSyncPackageStatus | null;
-}): string {
-  const marker = input.history?.syncPackageApplied ?? null;
-  const currentResources = input.currentPackage?.resources ?? [];
-  const appliedResources = marker?.resources ?? [];
-  const appliedById = new Map(appliedResources.map((resource) => [resource.id, resource]));
-  const currentById = new Map(currentResources.map((resource) => [resource.id, resource]));
-  const changed: Array<{
-    current: CodexSyncPackageResourceSummary;
-    applied: CodexSyncPackageResourceSummary;
-  }> = [];
-  const newResources: CodexSyncPackageResourceSummary[] = [];
-  const removedResources: CodexSyncPackageResourceSummary[] = [];
-
-  for (const current of currentResources) {
-    const applied = appliedById.get(current.id);
-    if (!applied) {
-      newResources.push(current);
-      continue;
-    }
-    if (syncPackageResourceFingerprint(current) !== syncPackageResourceFingerprint(applied)) {
-      changed.push({ current, applied });
-    }
-  }
-
-  for (const applied of appliedResources) {
-    if (!currentById.has(applied.id)) removedResources.push(applied);
-  }
-
-  const unchangedCount = currentResources.filter((resource) => {
-    const applied = appliedById.get(resource.id);
-    return applied && syncPackageResourceFingerprint(resource) === syncPackageResourceFingerprint(applied);
-  }).length;
-
-  const changedLines = changed.length
-    ? changed.flatMap((item) => [
-        `- ${item.current.label}`,
-        `  current: ${syncPackageResourceSummaryLine(item.current)}`,
-        `  applied: ${syncPackageResourceSummaryLine(item.applied)}`,
-      ])
-    : ['- none'];
-  const newLines = newResources.length
-    ? newResources.map((resource) => `- ${syncPackageResourceSummaryLine(resource)}`)
-    : ['- none'];
-  const removedLines = removedResources.length
-    ? removedResources.map((resource) => `- ${syncPackageResourceSummaryLine(resource)}`)
-    : ['- none'];
-
-  return [
-    '# Codex Clone Sync Package Resource Diff',
-    `generatedAt: ${new Date().toISOString()}`,
-    `instanceId: ${input.instance.id}`,
-    `instanceName: ${input.instance.name || input.instance.id}`,
-    `codexHome: ${input.history?.codexHome || input.instance.userDataDir}`,
-    '',
-    '## Boundary',
-    '- Source module state: current extracted sync package only.',
-    '- Clone module state: clone-owned clone-sync-package-applied.json marker only.',
-    '- This report does not copy from the running source profile and does not apply data to the clone.',
-    '',
-    '## Package',
-    `currentPackageExists: ${input.currentPackage?.exists ? 'yes' : 'no'}`,
-    `currentPackagePath: ${input.currentPackage?.packagePath ?? 'unknown'}`,
-    `currentPackageCreatedAt: ${formatTime(input.currentPackage?.createdAt)}`,
-    `markerApplied: ${marker ? 'yes' : 'no'}`,
-    `markerAppliedAt: ${formatTime(marker?.appliedAt)}`,
-    `markerPackageCreatedAt: ${formatTime(marker?.packageCreatedAt)}`,
-    `markerStaleWhenApplied: ${marker?.staleWhenApplied ? 'yes' : 'no'}`,
-    '',
-    '## Summary',
-    `changed: ${changed.length}`,
-    `new: ${newResources.length}`,
-    `removed: ${removedResources.length}`,
-    `unchanged: ${unchangedCount}`,
-    `currentResources: ${currentResources.length}`,
-    `appliedResources: ${appliedResources.length}`,
-    '',
-    '## Changed',
-    ...changedLines,
-    '',
-    '## New In Current Package',
-    ...newLines,
-    '',
-    '## Removed From Current Package',
-    ...removedLines,
-  ].join('\n');
-}
-
-function cloneHealthStats(instances: InstanceProfile[], historyByInstance: Record<string, CodexHistoryStatus>) {
-  const running = instances.filter((instance) => instance.running).length;
-  const checked = instances.filter((instance) => historyByInstance[instance.id] ?? instance.historyStatus).length;
-  const mismatch = instances.reduce((total, instance) => {
-    const history = historyByInstance[instance.id] ?? instance.historyStatus;
-    return total + (history?.mismatchCount ?? 0);
-  }, 0);
-  const warnings = instances.reduce((total, instance) => {
-    const history = historyByInstance[instance.id] ?? instance.historyStatus;
-    return total + (history?.warnings?.length ?? 0) + (history && !history.authOk ? 1 : 0);
-  }, 0);
-  return { running, checked, mismatch, warnings };
+  return getSyncPackageStateLabel(status, syncPackageStatusLabels);
 }
 
 function cloneReadinessSummary(
@@ -2563,22 +1505,14 @@ function cloneReadinessSummary(
 }
 
 function syncPackageApplyBlocker(status: CodexSyncPackageStatus | null): string | null {
-  if (!status) return text.syncPackageApplyUnknown;
-  if (!status.exists) return text.syncPackageApplyMissing;
-  return null;
-}
-
-function syncPackagePreflightBlocker(preflight: CodexSyncPackagePreflightReport | null): string | null {
-  if (!preflight) return null;
-  if (preflight.readyToApply && preflight.status !== 'error' && preflight.status !== 'missing') return null;
-  return `Preflight blocked Sync/Repair: ${preflight.errorCount} errors, ${preflight.warningCount} warnings. Copy the preflight report or refresh the source package.`;
+  return getSyncPackageApplyBlocker(status, syncPackageStatusLabels);
 }
 
 function syncPackageRepairBlocker(
   status: CodexSyncPackageStatus | null,
   preflight: CodexSyncPackagePreflightReport | null,
 ): string | null {
-  return syncPackageApplyBlocker(status) ?? syncPackagePreflightBlocker(preflight);
+  return getSyncPackageRepairBlocker(status, preflight, syncPackageStatusLabels);
 }
 
 function diagnosticsSummary(snapshot: DiagnosticsSnapshot | null): string {
@@ -2586,279 +1520,6 @@ function diagnosticsSummary(snapshot: DiagnosticsSnapshot | null): string {
   const logCount = snapshot.logFiles?.length ?? 0;
   const pathState = snapshot.codexAppPathExists ? '路径 OK' : '路径待修复';
   return `${pathState}，${logCount} 个日志文件，PID ${snapshot.launcherPid}`;
-}
-
-function gitWorktreeDiagnosticsLines(input: {
-  form?: GitWorktreeFormValues | null;
-  defaults?: GitWorktreeDefaults | null;
-  result?: GitWorktreeCreateResult | null;
-}): string[] {
-  const form = input.form ?? null;
-  const defaults = input.defaults ?? null;
-  const result = input.result ?? null;
-  const warnings = [...(defaults?.warnings ?? []), ...(result?.warnings ?? [])];
-  return [
-    '## Upstream Worktree',
-    `formRepoDir: ${form?.repoDir || 'empty'}`,
-    `formBase: ${(form?.baseRemote || 'upstream')}/${form?.baseBranch || 'main'}`,
-    `formNewBranch: ${form?.newBranch || 'empty'}`,
-    `formWorktreeDir: ${form?.worktreeDir || 'empty'}`,
-    `fetchBeforeCreate: ${form?.fetchBeforeCreate === false ? 'no' : 'yes'}`,
-    `detectedRepoDir: ${defaults?.repoDir ?? 'not detected'}`,
-    `detectedCurrentBranch: ${defaults?.currentBranch || 'unknown'}`,
-    `detectedRemotes: ${(defaults?.remotes ?? []).join(', ') || 'none'}`,
-    `detectedBaseRef: ${defaults?.baseRef ?? 'not detected'}`,
-    `detectedDirty: ${defaults ? (defaults.dirty ? 'yes' : 'no') : 'unknown'}`,
-    `createdWorktree: ${result?.worktreeDir ?? 'none'}`,
-    `createdBranch: ${result?.newBranch ?? 'none'}`,
-    `createdBaseRef: ${result?.baseRef ?? 'none'}`,
-    `createdFetched: ${result ? (result.fetched ? 'yes' : 'no') : 'unknown'}`,
-    `warnings: ${warnings.length ? warnings.join(' / ') : 'none'}`,
-  ];
-}
-
-function buildGitWorktreeDiagnosticsReport(input: {
-  form: GitWorktreeFormValues;
-  defaults: GitWorktreeDefaults | null;
-  result: GitWorktreeCreateResult | null;
-  appVersion: string;
-}): string {
-  return [
-    '# Codex Clone Launcher Upstream Worktree Diagnostics',
-    `generatedAt: ${new Date().toISOString()}`,
-    `appVersion: ${input.appVersion || 'unknown'}`,
-    '',
-    ...gitWorktreeDiagnosticsLines(input),
-  ].join('\n');
-}
-
-function buildDiagnosticsReport(input: {
-  diagnostics: DiagnosticsSnapshot | null;
-  syncPackage: CodexSyncPackageStatus | null;
-  syncPackageBackups?: CodexSyncPackageBackupSummary[];
-  syncPackagePreflight?: CodexSyncPackagePreflightReport | null;
-  gitWorktreeForm?: GitWorktreeFormValues | null;
-  gitWorktreeDefaults?: GitWorktreeDefaults | null;
-  gitWorktreeResult?: GitWorktreeCreateResult | null;
-  providerTestResult?: CodexProviderConnectionTestResult | null;
-  providerModelsResult?: CodexProviderModelsFetchResult | null;
-  providerConfigAudit?: ProviderConfigAudit | null;
-  modelCatalogEnabled?: boolean;
-  modelCatalogModels?: string[];
-  promptPackEnabled?: boolean;
-  promptPackChars?: number;
-  instances: InstanceProfile[];
-  historyByInstance: Record<string, CodexHistoryStatus>;
-  usageByInstance?: Record<string, CodexSessionUsageSummary>;
-  providerPresetCatalog?: ProviderPreset[];
-  providerHealthHistory?: ProviderHealthRecord[];
-  codexAppPath: string;
-  appVersion: string;
-}) {
-  const health = cloneHealthStats(input.instances, input.historyByInstance);
-  const sync = input.syncPackage;
-  const backups = input.syncPackageBackups ?? [];
-  const preflight = input.syncPackagePreflight ?? null;
-  const diagnostics = input.diagnostics;
-  const usageByInstance = input.usageByInstance ?? {};
-  const providerPresetCatalog = input.providerPresetCatalog ?? [];
-  const customProviderPresets = providerPresetCatalog.filter((preset) => preset.custom);
-  const builtinProviderPresets = providerPresetCatalog.length - customProviderPresets.length;
-  const providerPresetTags = new Set(providerPresetCatalog.flatMap((preset) => preset.tags ?? []));
-  const providerConfigAudit = input.providerConfigAudit ?? null;
-  const providerHealthHistory = input.providerHealthHistory ?? [];
-  const resourceLens = resourceLensItems(syncPackageResourceItems(sync));
-  const resourceLensSummary = resourceLensStats(resourceLens);
-  const packageIssues = [...(sync?.warnings ?? []), ...(sync?.skipped ?? []).map((item) => `skipped: ${item}`)];
-  const instanceLines = input.instances.length
-    ? input.instances.map((instance) => {
-        const history = input.historyByInstance[instance.id] ?? instance.historyStatus;
-        const usage = usageByInstance[instance.id];
-        const markerPath = history?.syncPackageApplied ? syncPackageAppliedMarkerPath(instance, history) : 'none';
-        const packageFreshness = syncPackageAppliedFreshness(history, sync);
-        const readiness = cloneReadinessSummary(instance, history, sync);
-        const usageCost = usage ? sessionUsageCostSummary(usage) : null;
-        return [
-          `- ${instance.name || instance.id}`,
-          `readiness=${readiness.label} (${readiness.detail})`,
-          `running=${instance.running ? 'yes' : 'no'}`,
-          `sync=${history?.syncMode ?? 'unknown'}`,
-          `threads=${history?.threadCount ?? 0}`,
-          `mismatch=${history?.mismatchCount ?? 0}`,
-          `auth=${history?.authOk ? 'ok' : 'warning'}`,
-          `provider=${history?.currentProvider ?? 'unknown'}`,
-          `modelCatalog=${instance.modelCatalogEnabled ? `${instance.modelCatalogCount ?? 0} models` : 'none'}`,
-          `launchScript=${instance.launchScript?.trim() ? 'configured' : 'none'}`,
-          `goalPursuit=${instance.goalEnabled ? 'configured' : 'none'}`,
-          `promptPack=${instance.promptPackEnabled ? 'configured' : 'none'}`,
-          `backup=${formatShortPath(history?.lastBackupPath)}`,
-          `package=${formatTime(history?.syncPackageApplied?.appliedAt)}`,
-          `packageMarker=${markerPath}`,
-          `packageResources=${syncPackageAppliedResourceRatio(history?.syncPackageApplied)}`,
-          `packageFreshness=${packageFreshness.label}`,
-          `usage=${usage ? `${usage.eventCount} events / ${usage.totalTokens} tokens / ${usage.scannedFiles} files` : 'not scanned'}`,
-          `usageCost=${usageCost ? `${formatUsd(usageCost.totalCostUsd)} estimated / priced=${usageCost.pricedModels} / unpriced=${usageCost.unpricedModels}` : 'not estimated'}`,
-        ].join(' | ');
-      })
-    : ['- no managed Codex clones'];
-  const latestLog = diagnostics?.latestLogTail
-    ? diagnostics.latestLogTail.split(/\r?\n/).filter(Boolean).slice(-20).join('\n')
-    : text.diagnosticsNoLogs;
-
-  return [
-    '# Codex Clone Launcher Diagnostics',
-    `generatedAt: ${new Date().toISOString()}`,
-    `appVersion: ${input.appVersion || 'unknown'}`,
-    `launcherPid: ${diagnostics?.launcherPid ?? 'unknown'}`,
-    `codexAppPath: ${input.codexAppPath || diagnostics?.codexAppPath || 'unknown'}`,
-    `codexAppPathExists: ${diagnostics?.codexAppPathExists ? 'yes' : 'no/unknown'}`,
-    `logDir: ${diagnostics?.logDir ?? 'unknown'}`,
-    `latestLogFile: ${diagnostics?.latestLogFile ?? 'none'}`,
-    '',
-    '## Sync Package',
-    `exists: ${sync?.exists ? 'yes' : 'no'}`,
-    `state: ${syncPackageStateLabel(sync)}`,
-    `stale: ${sync?.stale ? 'yes' : 'no'}`,
-    `packagePath: ${sync?.packagePath ?? 'unknown'}`,
-    `manifestPath: ${sync?.manifestPath ?? 'unknown'}`,
-    `source: ${sync?.source ?? 'unknown'}`,
-    `createdAt: ${formatTime(sync?.createdAt)}`,
-    `sourceModifiedAt: ${formatTime(sync?.sourceModifiedAt)}`,
-    `files: ${sync?.fileCount ?? 0}`,
-    `directories: ${sync?.directoryCount ?? 0}`,
-    `bytes: ${sync?.copiedBytes ?? 0} (${formatBytes(sync?.copiedBytes ?? 0)})`,
-    `entries: ${sync?.entries?.length ?? 0}`,
-    `preflight: ${preflight?.status ?? 'not checked'} | ready=${preflight?.readyToApply ? 'yes' : 'no'} | errors=${preflight?.errorCount ?? 0} | warnings=${preflight?.warningCount ?? 0}`,
-    ...(sync?.resources?.length
-      ? [
-          'resources:',
-          ...sync.resources.map(
-            (resource) =>
-              `- ${resource.label}: ${resource.status} | files=${resource.fileCount} | dirs=${resource.directoryCount} | bytes=${resource.bytes} | missing=${resource.missing.length} | errors=${resource.errors.length} | items=${(resource.items ?? []).join(', ') || 'none'}`,
-          ),
-        ]
-      : []),
-    `issues: ${packageIssues.length ? packageIssues.join(' / ') : 'none'}`,
-    '',
-    '## Sync Package Backups',
-    `count: ${backups.length}`,
-    ...(backups.length
-      ? backups.slice(0, 8).map(
-          (backup) =>
-            `- ${backup.id} | status=${backup.status} | backup=${formatTime(backup.backupCreatedAt)} | package=${formatTime(backup.packageCreatedAt)} | resources=${backup.readyResourceCount}/${backup.resourceCount} | bytes=${backup.copiedBytes} | path=${backup.backupPath}`,
-        )
-      : ['- no sync package backups']),
-    '',
-    '## Sync Package Preflight',
-    `status: ${preflight?.status ?? 'not checked'}`,
-    `readyToApply: ${preflight?.readyToApply ? 'yes' : 'no'}`,
-    `checkedAt: ${formatTime(preflight?.checkedAt)}`,
-    `unsafePaths: ${(preflight?.unsafePaths ?? []).join(', ') || 'none'}`,
-    ...((preflight?.checks ?? []).length
-      ? (preflight?.checks ?? []).map((check) => `- ${check.status}: ${check.label} | ${check.detail}`)
-      : ['- no preflight checks have been run']),
-    '',
-    '## MCP Skills Resource Lens',
-    `resources: ${resourceLensSummary.total}`,
-    `ready: ${resourceLensSummary.ready}`,
-    `issues: ${resourceLensSummary.issues}`,
-    `inventoryItems: ${resourceLensSummary.inventory}`,
-    ...(resourceLens.length
-      ? resourceLens.map(
-          (resource) =>
-            `- ${resource.label} | id=${resource.id || 'legacy'} | status=${resource.status ?? 'unknown'} | apply=${resource.applyMode || 'unknown'} | inventory=${resource.inventory?.length ? resource.inventory.join(', ') : 'none'}`,
-        )
-      : ['- no MCP/Skills focused resources']),
-    '',
-    '## Clone Health',
-    `total: ${input.instances.length}`,
-    `running: ${health.running}`,
-    `checked: ${health.checked}`,
-    `mismatch: ${health.mismatch}`,
-    `warnings: ${health.warnings}`,
-    ...instanceLines,
-    '',
-    '## Session Usage Cost Lens',
-    ...(Object.entries(usageByInstance).length
-      ? Object.entries(usageByInstance).flatMap(([instanceId, usage]) => {
-          const cost = sessionUsageCostSummary(usage);
-          return [
-            `- ${instanceId} | estimated=${formatUsd(cost.totalCostUsd)} | pricedModels=${cost.pricedModels} | unpricedModels=${cost.unpricedModels} | billableInput=${cost.billableInputTokens} | cachedInput=${cost.cachedInputTokens} | output=${cost.outputTokens} | cacheHitRate=${Math.round(cost.cacheHitRate * 100)}%`,
-            ...cost.byModel.slice(0, 8).map(
-              (model) =>
-                `  model=${model.model} | cost=${model.priced ? formatUsd(model.totalCostUsd) : 'unpriced'} | pricing=${model.pricingLabel} | input=${model.billableInputTokens} | cache=${model.cachedInputTokens} | output=${model.outputTokens}`,
-            ),
-          ];
-        })
-      : ['- no scanned session usage']),
-    '',
-    ...gitWorktreeDiagnosticsLines({
-      form: input.gitWorktreeForm,
-      defaults: input.gitWorktreeDefaults,
-      result: input.gitWorktreeResult,
-    }),
-    '',
-    '## Provider Presets',
-    `presets: ${providerPresetCatalog.length}`,
-    `builtin: ${builtinProviderPresets}`,
-    `custom: ${customProviderPresets.length}`,
-    `tags: ${providerPresetTags.size}`,
-    ...(customProviderPresets.length
-      ? customProviderPresets.map(
-          (preset) =>
-            `- ${preset.label} | provider=${preset.providerId} | baseUrl=${preset.baseUrl || 'empty'} | model=${preset.model} | tags=${(preset.tags ?? []).join(', ') || 'none'}`,
-        )
-      : ['- no custom provider presets']),
-    '',
-    '## Provider Health History',
-    `records: ${providerHealthHistory.length}`,
-    ...(providerHealthHistory.length
-      ? providerHealthHistory.slice(0, 12).map(
-          (record) =>
-            `- ${record.providerName} | ${record.model} | ${record.normalizedBaseUrl || record.baseUrl} | ${providerHealthLabel(record)} | protocol=${record.protocol} | http=${record.httpStatus ?? 'unknown'} | latencyMs=${record.latencyMs} | testedAt=${new Date(record.testedAt).toISOString()} | message=${record.message || 'none'}`,
-        )
-      : ['- no provider health records']),
-    '',
-    '## Provider Test',
-    `status: ${input.providerTestResult?.status ?? 'not tested'}`,
-    `codexReady: ${input.providerTestResult?.codexReady ? 'yes' : 'no/unknown'}`,
-    `protocol: ${input.providerTestResult?.protocol ?? 'unknown'}`,
-    `endpoint: ${input.providerTestResult?.endpoint ?? 'unknown'}`,
-    `httpStatus: ${input.providerTestResult?.httpStatus ?? 'unknown'}`,
-    `ttfbMs: ${input.providerTestResult?.ttfbMs ?? 'unknown'}`,
-    `latencyMs: ${input.providerTestResult?.latencyMs ?? 'unknown'}`,
-    `message: ${input.providerTestResult?.message ?? 'none'}`,
-    '',
-    '## Provider Config Audit',
-    `status: ${providerConfigAudit?.label ?? 'not evaluated'}`,
-    `detail: ${providerConfigAudit?.detail ?? 'none'}`,
-    `normalizedBaseUrl: ${providerConfigAudit?.normalizedBaseUrl || 'empty'}`,
-    `blocking: ${providerConfigAudit?.blockingCount ?? 0}`,
-    `warnings: ${providerConfigAudit?.warningCount ?? 0}`,
-    `duplicatePresetCount: ${providerConfigAudit?.duplicatePresetCount ?? 0}`,
-    `similarPresetCount: ${providerConfigAudit?.similarPresetCount ?? 0}`,
-    ...(providerConfigAudit?.checks?.length
-      ? providerConfigAudit.checks.map((check) => `- [${check.status}] ${check.label}: ${check.detail}`)
-      : ['- no audit checks']),
-    '',
-    '## Provider Models',
-    `status: ${input.providerModelsResult?.status ?? 'not fetched'}`,
-    `endpoint: ${input.providerModelsResult?.endpoint ?? 'unknown'}`,
-    `httpStatus: ${input.providerModelsResult?.httpStatus ?? 'unknown'}`,
-    `latencyMs: ${input.providerModelsResult?.latencyMs ?? 'unknown'}`,
-    `modelCount: ${input.providerModelsResult?.modelCount ?? 0}`,
-    `cloneModelCatalog: ${input.modelCatalogEnabled ? 'enabled' : 'disabled'}`,
-    `cloneModelCatalogCount: ${input.modelCatalogModels?.length ?? 0}`,
-    `clonePromptPack: ${input.promptPackEnabled ? 'enabled' : 'disabled'}`,
-    `clonePromptPackChars: ${input.promptPackChars ?? 0}`,
-    `message: ${input.providerModelsResult?.message ?? 'none'}`,
-    ...(input.providerModelsResult?.models?.length
-      ? input.providerModelsResult.models.slice(0, 40).map((model) => `- ${model}`)
-      : ['- no fetched models']),
-    '',
-    '## Latest Log Tail',
-    latestLog,
-  ].join('\n');
 }
 
 function busyMessage(label: string): string {
@@ -2882,10 +1543,6 @@ function busyMessage(label: string): string {
   if (label === 'app-update-auto-check') return text.updateChecking;
   if (label === 'app-update-install') return text.updateInstalling;
   return text.busyWorking;
-}
-
-function visibleInstances(instances: InstanceProfile[]): InstanceProfile[] {
-  return instances.filter((instance) => !instance.isDefault);
 }
 
 export default function App() {
@@ -2913,14 +1570,6 @@ export default function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
   const [codexAppPath, setCodexAppPath] = useState('');
   const [appVersion, setAppVersion] = useState('');
-  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ message: text.updateIdle });
-  const [autoCheckUpdates, setAutoCheckUpdates] = useState(() =>
-    readLocalStorageBoolean(UPDATE_AUTO_CHECK_KEY, false),
-  );
-  const [skippedUpdateVersion, setSkippedUpdateVersion] = useState(
-    () => localStorage.getItem(UPDATE_SKIPPED_VERSION_KEY) ?? '',
-  );
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode());
   const [customProviderPresets] = useState<ProviderPreset[]>(() =>
     readCustomProviderPresets(),
@@ -2935,8 +1584,37 @@ export default function App() {
   const [sessionSearchQuery, setSessionSearchQuery] = useState('');
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState<Message | null>(null);
-  const autoCheckStarted = useRef(false);
   const cloneSnapshotImportRef = useRef<HTMLInputElement | null>(null);
+  const {
+    availableUpdate,
+    updateStatus,
+    autoCheckUpdates,
+    skippedUpdateVersion,
+    setAutoCheckUpdates,
+    checkForAppUpdate,
+    installAppUpdate,
+    skipAvailableUpdate,
+    clearSkippedUpdate,
+    openReleasePage,
+  } = useAppUpdater({
+    labels: {
+      idle: text.updateIdle,
+      noUpdate: text.updateNoUpdate,
+      skipped: text.updateSkipped,
+      available: text.updateAvailable,
+      installing: text.updateInstalling,
+      installed: text.updateInstalled,
+      installedRestartFailed: text.updateInstalledRestartFailed,
+      checkFailed: text.updateCheckFailed,
+      installFailed: text.updateInstallFailed,
+      latestJsonMissing: text.updateLatestJsonMissing,
+      signatureHint: text.updateSignatureHint,
+      desktopOnlyHint: text.updateDesktopOnlyHint,
+      networkHint: text.updateNetworkHint,
+    },
+    showMessage,
+    withBusy,
+  });
 
   const codexCloneList = useMemo(() => visibleInstances(codexInstances), [codexInstances]);
   const providerPresetCatalog = useMemo(
@@ -3171,7 +1849,7 @@ export default function App() {
       });
       setProviderTestResult(result);
       rememberProviderHealth(providerHealthRecordFromTest({ form: codexForm, result }));
-      showMessage(result.codexReady ? 'success' : 'error', `${providerTestStatusLabel(result)}: ${result.message}`);
+      showMessage(result.codexReady ? 'success' : 'error', `${providerTestStatusLabel(result, providerFeedbackLabels)}: ${result.message}`);
     });
   }
 
@@ -3213,7 +1891,7 @@ export default function App() {
   }
 
   async function refreshDiagnostics() {
-    const snapshot = await invoke<DiagnosticsSnapshot>('get_diagnostics_snapshot', { lineLimit: 80 });
+    const snapshot = await getDiagnosticsSnapshot(80);
     setDiagnostics(snapshot);
   }
 
@@ -3263,18 +1941,6 @@ export default function App() {
     media.addEventListener('change', listener);
     return () => media.removeEventListener('change', listener);
   }, [themeMode]);
-
-  useEffect(() => {
-    localStorage.setItem(UPDATE_AUTO_CHECK_KEY, String(autoCheckUpdates));
-    if (!autoCheckUpdates || autoCheckStarted.current) return;
-    autoCheckStarted.current = true;
-    const timer = window.setTimeout(() => {
-      void withBusy('app-update-auto-check', async () => {
-        await resolveAppUpdate({ silentNoUpdate: true });
-      });
-    }, 3000);
-    return () => window.clearTimeout(timer);
-  }, [autoCheckUpdates]);
 
   async function withBusy(label: string, task: () => Promise<void>) {
     if (busy) return;
@@ -3466,11 +2132,17 @@ export default function App() {
   }
 
   async function copyDiagnosticsReport() {
+    const localErrors = getLocalErrorEvents();
     const report = buildDiagnosticsReport({
       diagnostics,
       syncPackage,
       syncPackageBackups,
       syncPackagePreflight,
+      updateStatus,
+      availableUpdate,
+      updaterOwnerRepo: updaterConfig.ownerRepo,
+      updaterEndpoint: updaterConfig.endpoint,
+      localErrors,
       gitWorktreeForm,
       gitWorktreeDefaults,
       gitWorktreeResult,
@@ -3488,6 +2160,19 @@ export default function App() {
       providerHealthHistory,
       codexAppPath,
       appVersion,
+      labels: {
+        diagnosticsNoLogs: text.diagnosticsNoLogs,
+        sessionCostUnpriced: text.sessionCostUnpriced,
+      },
+      formatters: {
+        formatTime,
+        formatBytes,
+        formatShortPath,
+        formatUsd,
+      },
+      syncPackageLabels: syncPackageStatusLabels,
+      syncPackageStateLabel,
+      cloneReadinessSummary,
     });
     setDiagnosticsReport(report);
     try {
@@ -3516,7 +2201,7 @@ export default function App() {
   }
 
   async function copySyncPackageResourceReport() {
-    const report = buildSyncPackageResourceReport(syncPackage);
+    const report = buildSyncPackageResourceReport(syncPackage, syncPackageReportDeps);
     try {
       await navigator.clipboard.writeText(report);
       showMessage('success', `${text.syncManifestTitle}: copied`);
@@ -3527,7 +2212,7 @@ export default function App() {
   }
 
   async function copyResourceLensReport() {
-    const report = buildResourceLensReport(syncPackage);
+    const report = buildResourceLensReport(syncPackage, syncPackageReportDeps);
     try {
       await navigator.clipboard.writeText(report);
       showMessage('success', text.resourceLensCopied);
@@ -3538,7 +2223,7 @@ export default function App() {
   }
 
   async function copySyncPackageBackupReport() {
-    const report = buildSyncPackageBackupReport(syncPackageBackups);
+    const report = buildSyncPackageBackupReport(syncPackageBackups, syncPackageReportDeps);
     try {
       await navigator.clipboard.writeText(report);
       showMessage('success', `${text.syncPackageTitle}: backups copied`);
@@ -3549,7 +2234,7 @@ export default function App() {
   }
 
   async function copySyncPackagePreflightReport() {
-    const report = buildSyncPackagePreflightReport(syncPackagePreflight);
+    const report = buildSyncPackagePreflightReport(syncPackagePreflight, syncPackageReportDeps);
     try {
       await navigator.clipboard.writeText(report);
       showMessage('success', `${text.syncPackageTitle}: preflight copied`);
@@ -3789,146 +2474,6 @@ export default function App() {
     showMessage('success', `${text.worktreeUseInCreate}: ${gitWorktreeResult.worktreeDir}`);
   }
 
-  async function resolveAppUpdate(
-    options: { ignoreSkipped?: boolean; silentNoUpdate?: boolean } = {},
-  ): Promise<AvailableUpdate> {
-    try {
-      const update = await check();
-      setAvailableUpdate(update);
-      if (!update) {
-        setUpdateStatus({ message: text.updateNoUpdate, checkedAt: Date.now() });
-        if (!options.silentNoUpdate) showMessage('success', text.updateNoUpdate);
-        return null;
-      }
-      if (!options.ignoreSkipped && skippedUpdateVersion === update.version) {
-        setAvailableUpdate(null);
-        setUpdateStatus({
-          message: `${text.updateSkipped}: ${update.version}`,
-          version: update.version,
-          notes: update.body ?? undefined,
-          checkedAt: Date.now(),
-        });
-        return null;
-      }
-      const message = `${text.updateAvailable}: ${update.version}`;
-      setUpdateStatus({
-        message,
-        version: update.version,
-        notes: update.body ?? undefined,
-        checkedAt: Date.now(),
-      });
-      showMessage('success', message);
-      return update;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      const diagnostic = diagnoseUpdateError(error);
-      reportError(error, { area: 'updater', action: 'check', detail });
-      setAvailableUpdate(null);
-      setUpdateStatus({
-        message: `${text.updateCheckFailed}: ${diagnostic}`,
-        diagnostic: detail,
-        checkedAt: Date.now(),
-      });
-      showMessage('error', `${text.updateCheckFailed}: ${diagnostic}`);
-      return null;
-    }
-  }
-
-  async function checkForAppUpdate() {
-    await withBusy('app-update-check', async () => {
-      await resolveAppUpdate();
-    });
-  }
-
-  async function installAppUpdate() {
-    await withBusy('app-update-install', async () => {
-      const update = availableUpdate ?? (await resolveAppUpdate({ ignoreSkipped: true }));
-      if (!update) {
-        return;
-      }
-      let downloaded = 0;
-      let total = 0;
-      try {
-        await update.downloadAndInstall((event) => {
-          if (event.event === 'Started') {
-            total = event.data.contentLength ?? 0;
-          } else if (event.event === 'Progress') {
-            downloaded += event.data.chunkLength;
-          } else if (event.event === 'Finished') {
-            downloaded = total || downloaded;
-          }
-          setUpdateStatus({
-            message: text.updateInstalling,
-            version: update.version,
-            notes: update.body ?? undefined,
-            downloaded,
-            total,
-          });
-        });
-        setUpdateStatus({
-          message: text.updateInstalled,
-          version: update.version,
-          notes: update.body ?? undefined,
-          downloaded,
-          total,
-        });
-        showMessage('success', text.updateInstalled);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        const diagnostic = diagnoseUpdateError(error);
-        reportError(error, { area: 'updater', action: 'install', detail });
-        setUpdateStatus({
-          message: `${text.updateInstallFailed}: ${diagnostic}`,
-          diagnostic: detail,
-          version: update.version,
-          notes: update.body ?? undefined,
-        });
-        showMessage('error', `${text.updateInstallFailed}: ${diagnostic}`);
-        return;
-      }
-
-      try {
-        await relaunch();
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        const diagnostic = diagnoseUpdateError(error);
-        reportError(error, { area: 'updater', action: 'relaunch', detail });
-        setUpdateStatus({
-          message: `${text.updateInstalledRestartFailed}: ${diagnostic}`,
-          diagnostic: detail,
-          version: update.version,
-          notes: update.body ?? undefined,
-          downloaded,
-          total,
-        });
-        showMessage('error', `${text.updateInstalledRestartFailed}: ${diagnostic}`);
-      }
-    });
-  }
-
-  function skipAvailableUpdate() {
-    if (!availableUpdate) return;
-    localStorage.setItem(UPDATE_SKIPPED_VERSION_KEY, availableUpdate.version);
-    setSkippedUpdateVersion(availableUpdate.version);
-    setAvailableUpdate(null);
-    setUpdateStatus({
-      message: `${text.updateSkipped}: ${availableUpdate.version}`,
-      version: availableUpdate.version,
-      notes: availableUpdate.body ?? undefined,
-      checkedAt: Date.now(),
-    });
-  }
-
-  function clearSkippedUpdate() {
-    localStorage.removeItem(UPDATE_SKIPPED_VERSION_KEY);
-    setSkippedUpdateVersion('');
-    setUpdateStatus({ message: text.updateIdle });
-  }
-
-  async function openReleasePage() {
-    await openUrl(updaterConfig.releasePage);
-  }
-
   async function openDiagnosticsLogDir() {
     const path = diagnostics?.logDir;
     if (!path) {
@@ -4018,7 +2563,10 @@ export default function App() {
       return;
     }
     const history = historyByInstance[instanceId] ?? instance.historyStatus;
-    const report = buildSyncPackageResourceDiffReport({ currentPackage: syncPackage, history, instance });
+    const report = buildSyncPackageResourceDiffReport(
+      { currentPackage: syncPackage, history, instance },
+      syncPackageResourceDiffReportDeps,
+    );
     try {
       await navigator.clipboard.writeText(report);
       showMessage('success', `${text.syncManifestTitle}: diff copied`);
@@ -4119,12 +2667,15 @@ export default function App() {
 
       {page === 'dashboard' ? (
         <DashboardPage
+          labels={dashboardPageLabels}
           syncPackage={syncPackage}
-          syncPackagePreflight={syncPackagePreflight}
           instances={codexCloneList}
           historyByInstance={historyByInstance}
           appVersion={appVersion}
           busy={busy}
+          packageState={syncPackageStateLabel(syncPackage)}
+          packageBytesLabel={formatBytes(syncPackage?.copiedBytes ?? 0)}
+          syncBlocker={syncPackageRepairBlocker(syncPackage, syncPackagePreflight)}
           onOpenCreate={() => setPage('codexCreate')}
           onOpenList={() => setPage('codexList')}
           onOpenSettings={() => setPage('settings')}
@@ -4135,1964 +2686,283 @@ export default function App() {
       ) : null}
 
       {page === 'codexCreate' ? (
-        <main className="create-grid">
-          <section className="hero-card">
-            <div className="hero-badge">
-              <Rocket size={16} />
-              CODEX CLONE
-            </div>
-            <h2>{text.codexHeroTitle}</h2>
-            <p>{text.codexHeroLead}</p>
-
-            <div className="api-strip">
-              <div>
-                <KeyRound size={16} />
-                {text.thirdPartyApi}
-              </div>
-              <button
-                className={showOfficialPanel ? 'active' : ''}
-                onClick={() => setShowOfficialPanel((value) => !value)}
-                type="button"
-              >
-                {showOfficialPanel ? text.collapseOfficial : text.officialEntry}
-              </button>
-              <button onClick={openCloneSnapshotImport} type="button">
-                <Import size={16} />
-                {text.cloneSnapshotImport}
-              </button>
-            </div>
-
-            <div className="form-grid">
-              <label>
-                <span>{text.cloneName}</span>
-                <input
-                  name="clone-name"
-                  value={codexForm.name}
-                  onChange={(event) => updateCodexForm({ name: event.target.value })}
-                />
-              </label>
-              <label>
-                <span>{text.model}</span>
-                <input
-                  name="clone-model"
-                  value={codexForm.model}
-                  onChange={(event) => updateCodexForm({ model: event.target.value })}
-                />
-              </label>
-              <label className="wide">
-                <span>{text.baseUrl}</span>
-                <input
-                  autoFocus
-                  name="clone-base-url"
-                  value={codexForm.baseUrl}
-                  onChange={(event) => updateCodexForm({ baseUrl: event.target.value })}
-                  placeholder="https://api.example.com/v1"
-                />
-              </label>
-              <label className="wide">
-                <span>{text.apiKey}</span>
-                <input
-                  name="clone-api-key"
-                  value={codexForm.apiKey}
-                  onChange={(event) => updateCodexForm({ apiKey: event.target.value })}
-                  placeholder="sk-..."
-                  type="password"
-                />
-              </label>
-              <div className="provider-test-actions wide">
-                <small>
-                  {text.providerModelsHint}
-                  <br />
-                  {text.providerTestHint}
-                </small>
-                <div className="provider-action-buttons">
-                  <button disabled={Boolean(busy)} onClick={() => void fetchProviderModels()} type="button">
-                    {busy === 'provider-model-fetch' ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
-                    {text.providerModelsFetch}
-                  </button>
-                  <button disabled={Boolean(busy)} onClick={() => void testProviderConnection()} type="button">
-                    {busy === 'provider-connection-test' ? <Loader2 className="spin" size={16} /> : <Activity size={16} />}
-                    {text.providerTest}
-                  </button>
-                </div>
-              </div>
-              {providerModelsResult ? (
-                <ProviderModelsPanel
-                  currentModel={codexForm.model}
-                  result={providerModelsResult}
-                  onSelect={(model) => updateCodexForm({ model })}
-                />
-              ) : null}
-              <ProviderConfigAuditPanel audit={providerConfigAudit} />
-              {providerTestResult ? <ProviderTestPanel result={providerTestResult} /> : null}
-
-              {showOfficialPanel ? (
-                <div className="official-panel wide">
-                  <div>
-                    <strong>{text.officialTitle}</strong>
-                    <p>{text.officialLead}</p>
-                  </div>
-                  <div className="official-actions">
-                    <button onClick={startOfficialLogin} type="button" disabled={Boolean(busy)}>
-                      {text.openOfficialLogin}
-                    </button>
-                    <button onClick={completeOfficialLogin} type="button" disabled={Boolean(busy) || !pendingLoginId}>
-                      {text.completeLogin}
-                    </button>
-                  </div>
-                  <select
-                    name="official-account-id"
-                    value={officialAccountId}
-                    onChange={(event) => setOfficialAccountId(event.target.value)}
-                  >
-                    <option value="">{text.chooseOfficial}</option>
-                    {officialAccountOptions.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {accountLabel(account)}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="secondary-action"
-                    onClick={() => void createCodexClone('officialAccount')}
-                    type="button"
-                    disabled={Boolean(busy)}
-                  >
-                    {text.useOfficial}
-                  </button>
-                </div>
-              ) : null}
-
-              <details className="advanced-options wide" open={advancedOptionsDefaultOpen ? true : undefined}>
-                <summary>{text.advancedOptions}</summary>
-                <div className="advanced-options-grid">
-                  <label>
-                    <span>{text.workdir}</span>
-                    <input
-                      name="clone-working-dir"
-                      value={codexForm.workingDir}
-                      onChange={(event) => updateCodexForm({ workingDir: event.target.value })}
-                      placeholder="C:\\path\\to\\workspace"
-                    />
-                  </label>
-                  <label>
-                    <span>{text.launchScript}</span>
-                    <textarea
-                      name="clone-launch-script"
-                      value={codexForm.launchScript}
-                      onChange={(event) => updateCodexForm({ launchScript: event.target.value })}
-                      placeholder={'// Optional clone-owned startup script\nwindow.__CODEX_CLONE_PROFILE__ = true;'}
-                      rows={5}
-                    />
-                    <small>{text.launchScriptHint}</small>
-                  </label>
-                  <div className={`model-catalog-option ${codexForm.modelCatalogEnabled ? 'enabled' : ''}`}>
-                    <label className="model-catalog-toggle">
-                      <input
-                        name="clone-model-catalog-enabled"
-                        type="checkbox"
-                        checked={codexForm.modelCatalogEnabled}
-                        onChange={(event) => updateCodexForm({ modelCatalogEnabled: event.target.checked })}
-                      />
-                      <span>
-                        <Database size={16} />
-                        {text.modelCatalog}
-                      </span>
-                    </label>
-                    <small>{text.modelCatalogHint}</small>
-                    <code>
-                      {modelCatalogModels.length
-                        ? `${modelCatalogModels.length} ${text.providerModelsCountUnit} -> ${codexForm.modelCatalogEnabled ? 'model-catalog.json' : text.modelCatalogStandby}`
-                        : text.modelCatalogEmpty}
-                    </code>
-                  </div>
-                  <div className={`goal-pursuit-panel ${codexForm.goalEnabled ? 'enabled' : ''}`}>
-                    <label className="goal-pursuit-toggle">
-                      <input
-                        name="clone-goal-enabled"
-                        type="checkbox"
-                        checked={codexForm.goalEnabled}
-                        onChange={(event) => updateCodexForm({ goalEnabled: event.target.checked })}
-                      />
-                      <span>
-                        <Target size={16} />
-                        {text.goalPursuit}
-                      </span>
-                    </label>
-                    <small>{text.goalPursuitHint}</small>
-                    {codexForm.goalEnabled ? (
-                      <textarea
-                        name="clone-goal-text"
-                        value={codexForm.goalText}
-                        onChange={(event) => updateCodexForm({ goalText: event.target.value })}
-                        placeholder={text.goalPursuitPlaceholder}
-                        rows={4}
-                      />
-                    ) : null}
-                  </div>
-                  <div className={`prompt-pack-panel ${codexForm.promptPackEnabled ? 'enabled' : ''}`}>
-                    <label className="prompt-pack-toggle">
-                      <input
-                        name="clone-prompt-pack-enabled"
-                        type="checkbox"
-                        checked={codexForm.promptPackEnabled}
-                        onChange={(event) => updateCodexForm({ promptPackEnabled: event.target.checked })}
-                      />
-                      <span>
-                        <BookOpen size={16} />
-                        {text.promptPack}
-                      </span>
-                    </label>
-                    <small>{text.promptPackHint}</small>
-                    {codexForm.promptPackEnabled ? (
-                      <textarea
-                        name="clone-prompt-pack-text"
-                        value={codexForm.promptPackText}
-                        onChange={(event) => updateCodexForm({ promptPackText: event.target.value })}
-                        placeholder={text.promptPackPlaceholder}
-                        rows={7}
-                      />
-                    ) : null}
-                  </div>
-                  <div className="checks advanced-checks">
-                    <label>
-                      <input
-                        name="clone-launch-after-create"
-                        type="checkbox"
-                        checked={codexForm.launchAfterCreate}
-                        onChange={(event) => updateCodexForm({ launchAfterCreate: event.target.checked })}
-                      />
-                      {text.launchAfterCreate}
-                    </label>
-                  </div>
-                </div>
-              </details>
-            </div>
-
-            <div className="checks">
-              <label>
-                <input
-                  name="clone-inherit-local-data"
-                  type="checkbox"
-                  checked={codexForm.inheritLocalData}
-                  onChange={(event) => updateCodexForm({ inheritLocalData: event.target.checked })}
-                />
-                {text.inheritCodex}
-              </label>
-            </div>
-
-            <button className="primary-action" onClick={() => void createCodexClone('apiKey')} type="button" disabled={Boolean(busy)}>
-              {busy === 'create-codex' ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-              {codexForm.launchAfterCreate ? text.createAndLaunchCodex : text.createOnlyCodex}
-            </button>
-          </section>
-
-          <aside className="info-card">
-            <h3>{text.inheritTitle}</h3>
-            <ul>
-              <li>{text.inheritChat}</li>
-              <li>{text.inheritSkills}</li>
-              <li>{text.inheritMcp}</li>
-              <li>{text.inheritGoals}</li>
-              <li>{text.inheritPlugins}</li>
-            </ul>
-            <p>{text.inheritNote}</p>
-          </aside>
-        </main>
+        <CreateCodexPage
+          labels={{
+            codexHeroTitle: text.codexHeroTitle,
+            codexHeroLead: text.codexHeroLead,
+            thirdPartyApi: text.thirdPartyApi,
+            collapseOfficial: text.collapseOfficial,
+            officialEntry: text.officialEntry,
+            cloneSnapshotImport: text.cloneSnapshotImport,
+            cloneName: text.cloneName,
+            model: text.model,
+            baseUrl: text.baseUrl,
+            apiKey: text.apiKey,
+            providerModelsHint: text.providerModelsHint,
+            providerTestHint: text.providerTestHint,
+            providerModelsFetch: text.providerModelsFetch,
+            providerTest: text.providerTest,
+            officialTitle: text.officialTitle,
+            officialLead: text.officialLead,
+            openOfficialLogin: text.openOfficialLogin,
+            completeLogin: text.completeLogin,
+            chooseOfficial: text.chooseOfficial,
+            useOfficial: text.useOfficial,
+            advancedOptions: text.advancedOptions,
+            workdir: text.workdir,
+            launchScript: text.launchScript,
+            launchScriptHint: text.launchScriptHint,
+            modelCatalog: text.modelCatalog,
+            modelCatalogHint: text.modelCatalogHint,
+            providerModelsCountUnit: text.providerModelsCountUnit,
+            modelCatalogStandby: text.modelCatalogStandby,
+            modelCatalogEmpty: text.modelCatalogEmpty,
+            goalPursuit: text.goalPursuit,
+            goalPursuitHint: text.goalPursuitHint,
+            goalPursuitPlaceholder: text.goalPursuitPlaceholder,
+            promptPack: text.promptPack,
+            promptPackHint: text.promptPackHint,
+            promptPackPlaceholder: text.promptPackPlaceholder,
+            launchAfterCreate: text.launchAfterCreate,
+            inheritCodex: text.inheritCodex,
+            createAndLaunchCodex: text.createAndLaunchCodex,
+            createOnlyCodex: text.createOnlyCodex,
+            inheritTitle: text.inheritTitle,
+            inheritChat: text.inheritChat,
+            inheritSkills: text.inheritSkills,
+            inheritMcp: text.inheritMcp,
+            inheritGoals: text.inheritGoals,
+            inheritPlugins: text.inheritPlugins,
+            inheritNote: text.inheritNote,
+          }}
+          form={codexForm}
+          busy={busy}
+          showOfficialPanel={showOfficialPanel}
+          canCompleteOfficialLogin={Boolean(pendingLoginId)}
+          officialAccountId={officialAccountId}
+          officialAccountOptions={officialAccountOptions}
+          providerModelsResult={providerModelsResult}
+          providerConfigAudit={providerConfigAudit}
+          providerTestResult={providerTestResult}
+          providerFeedbackLabels={providerFeedbackLabels}
+          modelCatalogModels={modelCatalogModels}
+          advancedOptionsDefaultOpen={advancedOptionsDefaultOpen}
+          onToggleOfficialPanel={() => setShowOfficialPanel((value) => !value)}
+          onOpenCloneSnapshotImport={openCloneSnapshotImport}
+          onFormChange={updateCodexForm}
+          onFetchProviderModels={() => void fetchProviderModels()}
+          onTestProviderConnection={() => void testProviderConnection()}
+          onStartOfficialLogin={startOfficialLogin}
+          onCompleteOfficialLogin={completeOfficialLogin}
+          onOfficialAccountChange={setOfficialAccountId}
+          onCreateOfficialClone={() => void createCodexClone('officialAccount')}
+          onCreateApiKeyClone={() => void createCodexClone('apiKey')}
+        />
       ) : null}
 
       {page === 'codexList' ? (
-        <section className="list-page">
-          <SyncPackagePanel
-            status={syncPackage}
-            backups={syncPackageBackups}
-            preflight={syncPackagePreflight}
-            busy={busy}
-            onExtract={extractCodexSyncPackage}
-            onRefresh={refreshCodexSyncPackageStatus}
-            onPreflight={refreshCodexSyncPackagePreflight}
-            onCopyResourceReport={copySyncPackageResourceReport}
-            onCopyResourceLensReport={copyResourceLensReport}
-            onCopyBackupReport={copySyncPackageBackupReport}
-            onCopyPreflightReport={copySyncPackagePreflightReport}
-            onOpenBackup={openSyncPackageBackupDir}
-            onRestoreBackup={restoreSyncPackageBackup}
-          />
-          <InstanceList
-            title={text.codexList}
-            subtitle={text.codexSubtitle}
-            emptyText={text.noCodex}
-            instances={codexCloneList}
-            syncPackage={syncPackage}
-            onRefresh={refreshCodexInstances}
-            onStart={startCodexInstance}
-            onStop={stopCodexInstance}
-            onDelete={deleteCodexInstance}
-            busy={busy}
-            syncBlockedReason={syncPackageRepairBlocker(syncPackage, syncPackagePreflight)}
-            syncNotice={syncPackage?.stale ? text.syncPackageApplyStale : null}
-            historyByInstance={historyByInstance}
-            onHistoryRefresh={refreshCodexHistory}
-            onHistoryVerify={verifyCodexHistory}
-            onHistoryRepair={repairCodexHistory}
-            onHistoryExportMarkdown={exportCodexHistoryMarkdown}
-            onCloneSnapshotExport={exportCloneCapabilitySnapshot}
-            onCloneSnapshotUse={useCloneCapabilitySnapshot}
-            cloneCapabilityDrafts={cloneCapabilityDrafts}
-            onCloneCapabilityEdit={startCloneCapabilityEdit}
-            onCloneCapabilityDraftChange={updateCloneCapabilityDraft}
-            onCloneCapabilitySave={saveCloneCapabilities}
-            onCloneCapabilityCancel={cancelCloneCapabilityEdit}
-            sessionsByInstance={sessionsByInstance}
-            usageByInstance={usageByInstance}
-            onSessionListRefresh={refreshCodexSessionList}
-            onSessionUsageRefresh={refreshCodexSessionUsage}
-            sessionSearchQuery={sessionSearchQuery}
-            onSessionSearchQueryChange={setSessionSearchQuery}
-            onCopySessionProjectDir={copyCodexSessionProjectDir}
-            exportDirByInstance={exportDirByInstance}
-            onOpenHistoryExportDir={openCodexHistoryExportDir}
-            onOpenZed={openCodexInstanceInZed}
-            onOpenSyncPackageAppliedMarker={openSyncPackageAppliedMarker}
-            onCopySyncPackageAppliedMarker={copySyncPackageAppliedMarker}
-            onCopySyncPackageResourceDiff={copySyncPackageResourceDiff}
-          />
-        </section>
+        <CodexInstancesPage
+          labels={{
+            syncPackage: {
+              title: text.syncPackageTitle,
+              missing: text.syncPackageMissing,
+              ready: text.syncPackageReady,
+              stale: text.syncPackageStale,
+              staleHint: text.syncPackageStaleHint,
+              applyMissing: text.syncPackageApplyMissing,
+              refresh: text.syncPackageRefresh,
+              refreshing: text.refreshing,
+              historyRefresh: text.historyRefresh,
+              preflight: text.preflight,
+              moreActions: text.moreActions,
+              copyResources: text.copyResources,
+              copyPreflight: text.copyPreflight,
+              copyBackups: text.copyBackups,
+              resourceLensCopy: text.resourceLensCopy,
+              details: text.syncPackageDetails,
+              manifestIncluded: text.syncManifestIncluded,
+              manifestExcluded: text.syncManifestExcluded,
+              manifestEntryPreview: text.syncManifestEntryPreview,
+              manifestMoreEntries: text.syncManifestMoreEntries,
+              manifestNoEntries: text.syncManifestNoEntries,
+              resourceLensTitle: text.resourceLensTitle,
+              backups: text.syncPackageBackups,
+            },
+            codexList: text.codexList,
+            codexSubtitle: text.codexSubtitle,
+            noCodex: text.noCodex,
+            syncPackageApplyStale: text.syncPackageApplyStale,
+          }}
+          resourceLensLabels={resourceLensLabels}
+          maintenanceLabels={syncPackageMaintenanceLabels}
+          instanceListLabels={instanceListLabels}
+          instanceListHelpers={instanceListHelpers}
+          syncPackage={syncPackage}
+          syncPackageBackups={syncPackageBackups}
+          syncPackagePreflight={syncPackagePreflight}
+          instances={codexCloneList}
+          busy={busy}
+          historyByInstance={historyByInstance}
+          cloneCapabilityDrafts={cloneCapabilityDrafts}
+          sessionsByInstance={sessionsByInstance}
+          usageByInstance={usageByInstance}
+          sessionSearchQuery={sessionSearchQuery}
+          exportDirByInstance={exportDirByInstance}
+          syncBlockedReason={syncPackageRepairBlocker(syncPackage, syncPackagePreflight)}
+          formatBytes={formatBytes}
+          formatTime={formatTime}
+          onExtractSyncPackage={extractCodexSyncPackage}
+          onRefreshSyncPackage={refreshCodexSyncPackageStatus}
+          onPreflightSyncPackage={refreshCodexSyncPackagePreflight}
+          onCopyResourceReport={copySyncPackageResourceReport}
+          onCopyResourceLensReport={copyResourceLensReport}
+          onCopyBackupReport={copySyncPackageBackupReport}
+          onCopyPreflightReport={copySyncPackagePreflightReport}
+          onOpenBackup={openSyncPackageBackupDir}
+          onRestoreBackup={restoreSyncPackageBackup}
+          onRefreshInstances={refreshCodexInstances}
+          onStartInstance={startCodexInstance}
+          onStopInstance={stopCodexInstance}
+          onDeleteInstance={deleteCodexInstance}
+          onHistoryRefresh={refreshCodexHistory}
+          onHistoryVerify={verifyCodexHistory}
+          onHistoryRepair={repairCodexHistory}
+          onHistoryExportMarkdown={exportCodexHistoryMarkdown}
+          onCloneSnapshotExport={exportCloneCapabilitySnapshot}
+          onCloneSnapshotUse={useCloneCapabilitySnapshot}
+          onCloneCapabilityEdit={startCloneCapabilityEdit}
+          onCloneCapabilityDraftChange={updateCloneCapabilityDraft}
+          onCloneCapabilitySave={saveCloneCapabilities}
+          onCloneCapabilityCancel={cancelCloneCapabilityEdit}
+          onSessionListRefresh={refreshCodexSessionList}
+          onSessionUsageRefresh={refreshCodexSessionUsage}
+          onSessionSearchQueryChange={setSessionSearchQuery}
+          onCopySessionProjectDir={copyCodexSessionProjectDir}
+          onOpenHistoryExportDir={openCodexHistoryExportDir}
+          onOpenZed={openCodexInstanceInZed}
+          onOpenSyncPackageAppliedMarker={openSyncPackageAppliedMarker}
+          onCopySyncPackageAppliedMarker={copySyncPackageAppliedMarker}
+          onCopySyncPackageResourceDiff={copySyncPackageResourceDiff}
+        />
       ) : null}
 
       {page === 'settings' ? (
-        <section className="settings-page">
-          <div className="section-header">
-            <div>
-              <h2>{text.settings}</h2>
-              <p>{text.settingsLead}</p>
-            </div>
-            <button onClick={saveSettings} type="button" disabled={Boolean(busy)}>
-              <Settings size={16} />
-              {text.save}
-            </button>
-          </div>
-          <PathRow
-            title={text.codexPath}
-            value={codexAppPath}
-            onChange={setCodexAppPath}
-            onPick={() => void pickCodexAppPath()}
-            onDetect={() => void detectCodexAppPath()}
-          />
-          <GitWorktreePanel
-            form={gitWorktreeForm}
-            defaults={gitWorktreeDefaults}
-            result={gitWorktreeResult}
-            busy={busy}
-            onChange={updateGitWorktreeForm}
-            onPickRepo={() => void pickGitWorktreeRepoDir()}
-            onPickTarget={() => void pickGitWorktreeTargetDir()}
-            onDetect={() => void detectGitWorktreeDefaults()}
-            onCreate={() => void createGitWorktree()}
-            onUseResult={useGitWorktreeResultInCreateForm}
-            onCopyDiagnostics={() => void copyGitWorktreeDiagnosticsReport()}
-          />
-          <UpdatePanel
-            appVersion={appVersion}
-            busy={busy}
-            status={updateStatus}
-            hasUpdate={Boolean(availableUpdate)}
-            autoCheck={autoCheckUpdates}
-            skippedVersion={skippedUpdateVersion}
-            ownerRepo={updaterConfig.ownerRepo}
-            endpoint={updaterConfig.endpoint}
-            onAutoCheckChange={setAutoCheckUpdates}
-            onCheck={() => void checkForAppUpdate()}
-            onInstall={() => void installAppUpdate()}
-            onSkip={() => skipAvailableUpdate()}
-            onClearSkip={() => clearSkippedUpdate()}
-            onOpenReleases={() => void openReleasePage()}
-          />
-          <DiagnosticsPanel
-            syncPackage={syncPackage}
-            diagnostics={diagnostics}
-            codexAppPath={codexAppPath}
-            appVersion={appVersion}
-            diagnosticsReport={diagnosticsReport}
-            busy={busy}
-            onRefreshDiagnostics={refreshDiagnosticsStatus}
-            onCopyDiagnosticsReport={copyDiagnosticsReport}
-            onOpenLogDir={openDiagnosticsLogDir}
-            onOpenSyncPackage={openSyncPackageDir}
-          />
-        </section>
-      ) : null}
-
-      {page === 'guide' ? <OperationGuide syncPackage={syncPackage} cloneCount={codexCloneList.length} /> : null}
-    </div>
-  );
-}
-
-type DashboardPageProps = {
-  syncPackage: CodexSyncPackageStatus | null;
-  syncPackagePreflight: CodexSyncPackagePreflightReport | null;
-  instances: InstanceProfile[];
-  historyByInstance: { [id: string]: CodexHistoryStatus };
-  appVersion: string;
-  busy: string;
-  onOpenCreate: () => void;
-  onOpenList: () => void;
-  onOpenSettings: () => void;
-  onBulkRefresh: () => unknown;
-  onBulkVerify: () => unknown;
-  onBulkRepair: () => unknown;
-};
-
-type DiagnosticsPanelProps = {
-  syncPackage: CodexSyncPackageStatus | null;
-  diagnostics: DiagnosticsSnapshot | null;
-  codexAppPath: string;
-  appVersion: string;
-  diagnosticsReport: string;
-  busy: string;
-  onRefreshDiagnostics: () => unknown;
-  onCopyDiagnosticsReport: () => unknown;
-  onOpenLogDir: () => unknown;
-  onOpenSyncPackage: () => unknown;
-};
-
-function DashboardPage(props: DashboardPageProps) {
-  const health = cloneHealthStats(props.instances, props.historyByInstance);
-  const packageReady = Boolean(props.syncPackage?.exists);
-  const packageState = syncPackageStateLabel(props.syncPackage);
-  const syncBlocker = syncPackageRepairBlocker(props.syncPackage, props.syncPackagePreflight);
-
-  return (
-    <section className="dashboard-page">
-      <div className="section-header dashboard-header">
-        <div>
-          <h2>{text.dashboard}</h2>
-          <p>{text.dashboardLead}</p>
-        </div>
-        <div className="dashboard-actions">
-          <button disabled={Boolean(props.busy)} onClick={props.onOpenCreate} type="button">
-            <Rocket size={16} />
-            {text.openCreate}
-          </button>
-          <button disabled={Boolean(props.busy)} onClick={props.onOpenList} type="button">
-            <Database size={16} />
-            {text.openList}
-          </button>
-          <button disabled={Boolean(props.busy)} onClick={props.onOpenSettings} type="button">
-            <Settings size={16} />
-            {text.openSettings}
-          </button>
-        </div>
-      </div>
-
-      <div className="dashboard-grid dashboard-overview-grid">
-        <section className="dashboard-card summary-card dashboard-metrics-card">
-          <div className="summary-grid dashboard-metrics">
-            <SummaryTile icon={<Gauge size={18} />} label={text.cloneRunningCount} value={String(health.running)} />
-            <SummaryTile icon={<Layers size={18} />} label={text.cloneTotalCount} value={String(props.instances.length)} />
-            <SummaryTile icon={<ShieldCheck size={18} />} label={text.packageFreshness} value={packageState} />
-            <SummaryTile icon={<Activity size={18} />} label={text.launcherVersion} value={props.appVersion || 'unknown'} />
-          </div>
-        </section>
-
-        <section className="dashboard-card health-card">
-          <div className="card-title-row">
-            <span>{text.healthTitle}</span>
-            <Activity size={18} />
-          </div>
-          <p>{text.healthLead}</p>
-          <div className="summary-grid health-summary-grid">
-            <SummaryTile icon={<ShieldCheck size={16} />} label={text.healthChecked} value={String(health.checked)} />
-            <SummaryTile icon={<CircleAlert size={16} />} label={text.healthMismatchWarning} value={`${health.mismatch} / ${health.warnings}`} />
-          </div>
-          <div className="dashboard-actions compact health-actions">
-            <button disabled={Boolean(props.busy) || !props.instances.length} onClick={() => void props.onBulkRefresh()} type="button">
-              {props.busy === 'codex-history-bulk-refresh' ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-              {text.healthBulkRefresh}
-            </button>
-            <button disabled={Boolean(props.busy) || !props.instances.length} onClick={() => void props.onBulkVerify()} type="button">
-              {props.busy === 'codex-history-bulk-verify' ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
-              {text.healthBulkVerify}
-            </button>
-            <button
-              disabled={Boolean(props.busy) || !props.instances.length || Boolean(syncBlocker)}
-              onClick={() => void props.onBulkRepair()}
-              title={syncBlocker ?? undefined}
-              type="button"
-            >
-              {props.busy === 'codex-history-bulk-repair' ? <Loader2 className="spin" size={16} /> : <Wrench size={16} />}
-              {text.healthBulkRepair}
-            </button>
-          </div>
-        </section>
-
-        <section className={packageReady ? 'dashboard-card sync-card ready' : 'dashboard-card sync-card'}>
-          <div className="card-title-row">
-            <span>{text.syncPackageTitle}</span>
-            <Database size={18} />
-          </div>
-          <p>{text.syncManifestLead}</p>
-          <div className="package-state-row">
-            <strong>{packageState}</strong>
-            <span>{formatBytes(props.syncPackage?.copiedBytes ?? 0)}</span>
-          </div>
-          <div className="dashboard-actions compact">
-            <button disabled={Boolean(props.busy)} onClick={props.onOpenList} type="button">
-              <Database size={16} />
-              {text.syncPackageManage}
-            </button>
-          </div>
-        </section>
-      </div>
-    </section>
-  );
-}
-
-function DiagnosticsPanel(props: DiagnosticsPanelProps) {
-  const packageState = syncPackageStateLabel(props.syncPackage);
-  const diagnosticsLogPreview = props.diagnostics?.latestLogTail
-    ? props.diagnostics.latestLogTail.split(/\r?\n/).filter(Boolean).slice(-6).join('\n')
-    : text.diagnosticsNoLogs;
-  const packageIssues = [
-    ...(props.syncPackage?.warnings ?? []),
-    ...(props.syncPackage?.skipped ?? []).map((item) => `skipped: ${item}`),
-  ].slice(0, 5);
-
-  return (
-    <section className="settings-diagnostics diagnostics-card">
-      <div className="card-title-row">
-        <span>{text.diagnosticsTitle}</span>
-        <Wrench size={18} />
-      </div>
-      <p>{text.diagnosticsLead}</p>
-      <div className="diagnostics-list">
-        <div>
-          <strong>{text.quickActions}</strong>
-          <span>{diagnosticsSummary(props.diagnostics)}</span>
-        </div>
-        <div>
-          <strong>{text.packageFreshness}</strong>
-          <span>{packageState}</span>
-        </div>
-        <div>
-          <strong>{text.launcherVersion}</strong>
-          <span>{props.appVersion ? props.appVersion : 'unknown'}</span>
-        </div>
-        <div>
-          <strong>{text.diagnosticsPid}</strong>
-          <span>{props.diagnostics ? String(props.diagnostics.launcherPid) : 'unknown'}</span>
-        </div>
-        <div>
-          <strong>{text.codexPath}</strong>
-          <span>{props.codexAppPath ? props.codexAppPath : text.pathPlaceholder}</span>
-        </div>
-        <div>
-          <strong>{text.diagnosticsLogDir}</strong>
-          <span>{props.diagnostics?.logDir ?? 'unknown'}</span>
-        </div>
-        <div className={packageIssues.length ? 'diagnostics-issues has-issues' : 'diagnostics-issues'}>
-          <strong>{text.diagnosticsIssueSummary}</strong>
-          <span>{packageIssues.length ? packageIssues.join(' / ') : text.diagnosticsNoIssues}</span>
-        </div>
-      </div>
-      <div className="dashboard-actions compact">
-        <button disabled={Boolean(props.busy)} onClick={() => void props.onRefreshDiagnostics()} type="button">
-          {props.busy === 'diagnostics-refresh' ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-          {props.busy === 'diagnostics-refresh' ? text.refreshing : text.diagnosticsRefresh}
-        </button>
-        <button disabled={Boolean(props.busy)} onClick={() => void props.onCopyDiagnosticsReport()} type="button">
-          <ShieldCheck size={16} />
-          {text.diagnosticsCopyReport}
-        </button>
-        <button disabled={Boolean(props.busy) || !props.diagnostics?.logDir} onClick={() => void props.onOpenLogDir()} type="button">
-          <FolderOpen size={16} />
-          {text.diagnosticsOpenLogDir}
-        </button>
-        <button disabled={Boolean(props.busy) || !props.syncPackage?.exists} onClick={() => void props.onOpenSyncPackage()} type="button">
-          <Database size={16} />
-          {text.diagnosticsOpenSyncPackage}
-        </button>
-      </div>
-      {props.diagnosticsReport ? (
-        <div className="diagnostics-report-preview">
-          <strong>{text.diagnosticsReportPreview}</strong>
-          <pre>{props.diagnosticsReport}</pre>
-        </div>
-      ) : null}
-      <div className="log-preview">
-        <strong>{text.diagnosticsLogs}</strong>
-        <code>{props.diagnostics?.latestLogFile ?? text.diagnosticsNoLogs}</code>
-        <pre>{diagnosticsLogPreview}</pre>
-      </div>
-    </section>
-  );
-}
-function SummaryTile(props: { icon: ReactNode; label: string; value: string }) {
-  return createElement(
-    'div',
-    { className: 'summary-tile' },
-    props.icon,
-    createElement('span', null, props.label),
-    createElement('strong', null, props.value),
-  );
-}
-
-function CardMenu(props: { label: string; disabled?: boolean; children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
-  }, [open]);
-
-  return (
-    <div className="card-menu" ref={menuRef}>
-      <button
-        aria-expanded={open}
-        aria-label={props.label}
-        className="card-menu-trigger"
-        disabled={props.disabled}
-        onClick={() => setOpen((value) => !value)}
-        title={props.label}
-        type="button"
-      >
-        ⋯
-      </button>
-      {open ? (
-        <div className="card-menu-popover" onClick={() => setOpen(false)} role="menu">
-          {props.children}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ProviderConfigAuditPanel(props: { audit: ProviderConfigAudit }) {
-  const visibleChecks = props.audit.checks
-    .filter((check) => check.status !== 'ok' || props.audit.tone === 'ok')
-    .slice(0, 7);
-  const Icon = props.audit.tone === 'blocked' || props.audit.tone === 'warning' ? CircleAlert : ShieldCheck;
-  return (
-    <div className={`provider-audit-panel wide ${props.audit.tone}`}>
-      <div className="provider-audit-title">
-        <Icon size={16} />
-        <strong>{text.providerAuditTitle}</strong>
-        <span>{props.audit.label}</span>
-      </div>
-      <p>{text.providerAuditLead}</p>
-      <div className="provider-audit-metrics">
-        <code>{props.audit.normalizedBaseUrl || 'Base URL empty'}</code>
-        <span>{props.audit.detail}</span>
-        <span>duplicate presets {props.audit.duplicatePresetCount}</span>
-        <span>similar presets {props.audit.similarPresetCount}</span>
-      </div>
-      <div className="provider-audit-checks">
-        {visibleChecks.map((check) => (
-          <small className={check.status} key={check.id} title={check.detail}>
-            {check.label}: {check.detail}
-          </small>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ProviderModelsPanel(props: {
-  result: CodexProviderModelsFetchResult;
-  currentModel: string;
-  onSelect: (model: string) => void;
-}) {
-  const visibleModels = props.result.models.slice(0, 48);
-  const hiddenCount = Math.max(0, props.result.models.length - visibleModels.length);
-  const current = props.currentModel.trim();
-  return (
-    <div className={`provider-models-panel wide ${props.result.ok ? 'ok' : props.result.status}`}>
-      <div className="provider-test-title">
-        <strong>{props.result.ok ? text.providerModelsFetched : text.providerModelsEmpty}</strong>
-        <span>{props.result.httpStatus ? `HTTP ${props.result.httpStatus}` : props.result.status}</span>
-      </div>
-      <p>{props.result.message}</p>
-      <div className="provider-test-metrics">
-        <span>{props.result.modelCount} {text.providerModelsCountUnit}</span>
-        <span>{text.providerLatencyLabel} {props.result.latencyMs}ms</span>
-      </div>
-      <code>{props.result.endpoint}</code>
-      {visibleModels.length ? (
-        <div className="provider-model-list">
-          {visibleModels.map((model) => (
-            <button
-              className={model === current ? 'selected' : ''}
-              disabled={model === current}
-              key={model}
-              onClick={() => props.onSelect(model)}
-              title={model}
-              type="button"
-            >
-              {model === current ? <CheckCircle2 size={13} /> : null}
-              <span>{model}</span>
-            </button>
-          ))}
-          {hiddenCount ? (
-            <small>
-              {text.providerModelsHiddenPrefix}
-              {hiddenCount}
-              {text.providerModelsHiddenSuffix}
-            </small>
-          ) : null}
-        </div>
-      ) : null}
-      {props.result.responsePreview && !visibleModels.length ? <small>{props.result.responsePreview}</small> : null}
-    </div>
-  );
-}
-
-function ProviderTestPanel(props: { result: CodexProviderConnectionTestResult }) {
-  const tone = props.result.codexReady ? (props.result.status === 'degraded' ? 'warning' : 'ok') : props.result.ok ? 'warning' : 'error';
-  return (
-    <div className={`provider-test-panel wide ${tone}`}>
-      <div className="provider-test-title">
-        <strong>{providerTestStatusLabel(props.result)}</strong>
-        <span>{props.result.httpStatus ? `HTTP ${props.result.httpStatus}` : props.result.protocol}</span>
-      </div>
-      <p>{props.result.message}</p>
-      <div className="provider-test-metrics">
-        <span>protocol {props.result.protocol}</span>
-        <span>{text.providerTtfbLabel} {props.result.ttfbMs ?? '-'}ms</span>
-        <span>{text.providerLatencyLabel} {props.result.latencyMs}ms</span>
-        <span>{props.result.codexReady ? text.providerHealthCodexReady : text.providerNeedsRelay}</span>
-      </div>
-      <code>{props.result.endpoint}</code>
-      {props.result.responsePreview ? <small>{props.result.responsePreview}</small> : null}
-    </div>
-  );
-}
-
-function OperationGuide(props: {
-  syncPackage: CodexSyncPackageStatus | null;
-  cloneCount: number;
-}) {
-  const packageReady = Boolean(props.syncPackage?.exists);
-  const packageState = packageReady
-    ? props.syncPackage?.stale
-      ? text.syncPackageStale
-      : text.syncPackageReady
-    : text.guidePackageMissing;
-
-  return (
-    <section className="guide-page">
-      <div className="section-header">
-        <div>
-          <h2>{text.guide}</h2>
-          <p>{text.guideLead}</p>
-        </div>
-        <BookOpen size={28} />
-      </div>
-
-      <div className="guide-status">
-        <div>
-          <span>{text.syncPackageTitle}</span>
-          <strong>{packageState}</strong>
-          <code>{props.syncPackage?.packagePath || text.guidePackageNotGenerated}</code>
-        </div>
-        <div>
-          <span>{text.cloneTotalCount}</span>
-          <strong>{props.cloneCount}</strong>
-          <small>{text.guideManagedCloneOnly}</small>
-        </div>
-        <div>
-          <span>{text.guidePackageSize}</span>
-          <strong>{formatBytes(props.syncPackage?.copiedBytes ?? 0)}</strong>
-          <small>
-            {(props.syncPackage?.fileCount ?? 0).toLocaleString()} {text.guideFilesUnit} /{' '}
-            {(props.syncPackage?.directoryCount ?? 0).toLocaleString()} {text.guideDirsUnit}
-          </small>
-        </div>
-      </div>
-
-      <div className="guide-grid">
-        <GuidePanel title={text.guideQuickStart} items={guideQuickStartSteps} ordered />
-        <GuidePanel title={text.guideSafety} items={guideSafetyRules} />
-        <GuidePanel title={text.guideTroubleshooting} items={guideTroubleshootingItems} />
-      </div>
-    </section>
-  );
-}
-
-function GitWorktreePanel(props: {
-  form: GitWorktreeFormValues;
-  defaults: GitWorktreeDefaults | null;
-  result: GitWorktreeCreateResult | null;
-  busy: string;
-  onChange: (patch: Partial<GitWorktreeFormValues>) => void;
-  onPickRepo: () => void;
-  onPickTarget: () => void;
-  onDetect: () => void;
-  onCreate: () => void;
-  onUseResult: () => void;
-  onCopyDiagnostics: () => void;
-}) {
-  const detecting = props.busy === 'git-worktree-detect';
-  const creating = props.busy === 'git-worktree-create';
-  const warnings = [
-    ...(props.defaults?.warnings ?? []),
-    ...(props.result?.warnings ?? []),
-  ];
-
-  return (
-    <section className="worktree-panel">
-      <div className="worktree-title-row">
-        <div>
-          <span>{text.worktreeTitle}</span>
-          <p>{text.worktreeLead}</p>
-        </div>
-        <div className="worktree-title-actions">
-          <button disabled={Boolean(props.busy)} onClick={props.onCopyDiagnostics} type="button">
-            <Copy size={16} />
-            {text.worktreeCopyDiagnostics}
-          </button>
-          <GitBranch size={22} />
-        </div>
-      </div>
-
-      <div className="worktree-form-grid">
-        <label className="wide">
-          <span>{text.worktreeRepoDir}</span>
-          <input
-            value={props.form.repoDir}
-            onChange={(event) => props.onChange({ repoDir: event.currentTarget.value })}
-            placeholder="C:\\path\\to\\repo"
-          />
-        </label>
-        <button disabled={Boolean(props.busy)} onClick={props.onPickRepo} type="button">
-          <FolderOpen size={16} />
-          {text.pick}
-        </button>
-        <button disabled={Boolean(props.busy)} onClick={props.onDetect} type="button">
-          {detecting ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-          {detecting ? text.refreshing : text.worktreeDetect}
-        </button>
-
-        <label>
-          <span>{text.worktreeBaseRemote}</span>
-          <input
-            value={props.form.baseRemote}
-            onChange={(event) => props.onChange({ baseRemote: event.currentTarget.value })}
-            placeholder="upstream"
-          />
-        </label>
-        <label>
-          <span>{text.worktreeBaseBranch}</span>
-          <input
-            value={props.form.baseBranch}
-            onChange={(event) => props.onChange({ baseBranch: event.currentTarget.value })}
-            placeholder="main"
-          />
-        </label>
-        <label className="wide">
-          <span>{text.worktreeNewBranch}</span>
-          <input
-            value={props.form.newBranch}
-            onChange={(event) => props.onChange({ newBranch: event.currentTarget.value })}
-            placeholder="feature/codex-clone-work"
-          />
-        </label>
-
-        <label className="wide">
-          <span>{text.worktreeDir}</span>
-          <input
-            value={props.form.worktreeDir}
-            onChange={(event) => props.onChange({ worktreeDir: event.currentTarget.value })}
-            placeholder="C:\\path\\to\\repo-feature"
-          />
-        </label>
-        <button disabled={Boolean(props.busy)} onClick={props.onPickTarget} type="button">
-          <FolderOpen size={16} />
-          {text.pick}
-        </button>
-        <button disabled={Boolean(props.busy)} onClick={props.onCreate} type="button">
-          {creating ? <Loader2 className="spin" size={16} /> : <GitBranch size={16} />}
-          {text.worktreeCreate}
-        </button>
-      </div>
-
-      <label className="worktree-toggle">
-        <input
-          checked={props.form.fetchBeforeCreate}
-          onChange={(event) => props.onChange({ fetchBeforeCreate: event.currentTarget.checked })}
-          type="checkbox"
+        <SettingsPage
+          busy={busy}
+          appVersion={appVersion}
+          codexAppPath={codexAppPath}
+          gitWorktreeForm={gitWorktreeForm}
+          gitWorktreeDefaults={gitWorktreeDefaults}
+          gitWorktreeResult={gitWorktreeResult}
+          updateStatus={updateStatus}
+          hasAvailableUpdate={Boolean(availableUpdate)}
+          latestUpdateVersion={availableUpdate?.version}
+          autoCheckUpdates={autoCheckUpdates}
+          skippedUpdateVersion={skippedUpdateVersion}
+          updaterOwnerRepo={updaterConfig.ownerRepo}
+          updaterEndpoint={updaterConfig.endpoint}
+          syncPackage={syncPackage}
+          syncPackagePreflight={syncPackagePreflight}
+          diagnostics={diagnostics}
+          diagnosticsReport={diagnosticsReport}
+          localErrors={getLocalErrorEvents()}
+          packageState={syncPackageStateLabel(syncPackage)}
+          diagnosticsSummary={diagnosticsSummary(diagnostics)}
+          labels={{
+            settings: text.settings,
+            settingsLead: text.settingsLead,
+            save: text.save,
+            codexPath: text.codexPath,
+            pick: text.pick,
+            autoDetect: text.autoDetect,
+            pathPlaceholder: text.pathPlaceholder,
+            refreshing: text.refreshing,
+            worktreeTitle: text.worktreeTitle,
+            worktreeLead: text.worktreeLead,
+            worktreeRepoDir: text.worktreeRepoDir,
+            worktreeBaseRemote: text.worktreeBaseRemote,
+            worktreeBaseBranch: text.worktreeBaseBranch,
+            worktreeNewBranch: text.worktreeNewBranch,
+            worktreeDir: text.worktreeDir,
+            worktreeFetch: text.worktreeFetch,
+            worktreeDetect: text.worktreeDetect,
+            worktreeCreate: text.worktreeCreate,
+            worktreeUseInCreate: text.worktreeUseInCreate,
+            worktreeCopyDiagnostics: text.worktreeCopyDiagnostics,
+            update: {
+              title: text.updateTitle,
+              currentVersion: text.currentVersion,
+              unknownVersion: text.updateUnknownVersion,
+              lead: text.updateLead,
+              repository: text.updateRepository,
+              endpoint: text.updateEndpoint,
+              latestVersion: text.updateLatestVersion,
+              checkedAt: text.updateCheckedAt,
+              autoCheck: text.autoCheckUpdates,
+              check: text.checkUpdate,
+              checking: text.updateChecking,
+              install: text.installUpdate,
+              checkAndInstall: text.checkAndInstallUpdate,
+              installing: text.updateInstalling,
+              skip: text.skipThisVersion,
+              resumeSkipped: text.resumeSkippedUpdate,
+              openReleases: text.openReleases,
+              never: text.never,
+            },
+            diagnostics: {
+              title: text.diagnosticsTitle,
+              lead: text.diagnosticsLead,
+              quickActions: text.quickActions,
+              packageFreshness: text.packageFreshness,
+              launcherVersion: text.launcherVersion,
+              diagnosticsPid: text.diagnosticsPid,
+              codexPath: text.codexPath,
+              pathPlaceholder: text.pathPlaceholder,
+              diagnosticsLogDir: text.diagnosticsLogDir,
+              issueSummary: text.diagnosticsIssueSummary,
+              noIssues: text.diagnosticsNoIssues,
+              refreshing: text.refreshing,
+              refresh: text.diagnosticsRefresh,
+              copyReport: text.diagnosticsCopyReport,
+              openLogDir: text.diagnosticsOpenLogDir,
+              openSyncPackage: text.diagnosticsOpenSyncPackage,
+              reportPreview: text.diagnosticsReportPreview,
+              logs: text.diagnosticsLogs,
+              noLogs: text.diagnosticsNoLogs,
+            },
+          }}
+          onSaveSettings={saveSettings}
+          onCodexPathChange={setCodexAppPath}
+          onPickCodexPath={() => void pickCodexAppPath()}
+          onDetectCodexPath={() => void detectCodexAppPath()}
+          onGitWorktreeChange={updateGitWorktreeForm}
+          onPickGitWorktreeRepo={() => void pickGitWorktreeRepoDir()}
+          onPickGitWorktreeTarget={() => void pickGitWorktreeTargetDir()}
+          onDetectGitWorktree={() => void detectGitWorktreeDefaults()}
+          onCreateGitWorktree={() => void createGitWorktree()}
+          onUseGitWorktreeResult={useGitWorktreeResultInCreateForm}
+          onCopyGitWorktreeDiagnostics={() => void copyGitWorktreeDiagnosticsReport()}
+          onAutoCheckUpdatesChange={setAutoCheckUpdates}
+          onCheckUpdate={() => void checkForAppUpdate()}
+          onInstallUpdate={() => void installAppUpdate()}
+          onSkipUpdate={() => skipAvailableUpdate()}
+          onClearSkippedUpdate={() => clearSkippedUpdate()}
+          onOpenReleases={() => void openReleasePage()}
+          onRefreshDiagnostics={refreshDiagnosticsStatus}
+          onCopyDiagnosticsReport={copyDiagnosticsReport}
+          onOpenLogDir={openDiagnosticsLogDir}
+          onOpenSyncPackage={openSyncPackageDir}
         />
-        <span>{text.worktreeFetch}</span>
-      </label>
-
-      {props.defaults ? (
-        <div className="worktree-status">
-          <div>
-            <span>当前分支</span>
-            <strong>{props.defaults.currentBranch || 'DETACHED'}</strong>
-          </div>
-          <div>
-            <span>远端基线</span>
-            <strong>{props.defaults.baseRef}</strong>
-          </div>
-          <div>
-            <span>可用远端</span>
-            <strong>{(props.defaults.remotes ?? []).length ? (props.defaults.remotes ?? []).join(', ') : 'none'}</strong>
-          </div>
-          <div>
-            <span>本地改动</span>
-            <strong>{props.defaults.dirty ? '有未提交改动' : '干净'}</strong>
-          </div>
-        </div>
       ) : null}
 
-      {props.result ? (
-        <div className="worktree-result">
-          <div>
-            <strong>{props.result.newBranch}</strong>
-            <span>{props.result.baseRef}</span>
-            <code>{props.result.worktreeDir}</code>
-          </div>
-          <button disabled={Boolean(props.busy)} onClick={props.onUseResult} type="button">
-            <Rocket size={16} />
-            {text.worktreeUseInCreate}
-          </button>
-        </div>
-      ) : null}
-
-      {warnings.length ? (
-        <div className="worktree-warnings">
-          {warnings.slice(0, 3).map((warning) => (
-            <small key={warning}>{warning}</small>
-          ))}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function UpdatePanel(props: {
-  appVersion: string;
-  busy: string;
-  status: UpdateStatus;
-  hasUpdate: boolean;
-  autoCheck: boolean;
-  skippedVersion: string;
-  ownerRepo: string;
-  endpoint: string;
-  onAutoCheckChange: (enabled: boolean) => void;
-  onCheck: () => void;
-  onInstall: () => void;
-  onSkip: () => void;
-  onClearSkip: () => void;
-  onOpenReleases: () => void;
-}) {
-  const isChecking = props.busy === 'app-update-check';
-  const isInstalling = props.busy === 'app-update-install';
-  const downloaded = props.status.downloaded ?? 0;
-  const total = props.status.total ?? 0;
-  const progress = total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : 0;
-
-  return (
-    <section className="update-panel">
-      <div>
-        <span>{text.updateTitle}</span>
-        <strong>
-          {text.currentVersion}: {props.appVersion || text.updateUnknownVersion}
-        </strong>
-        <p>{text.updateLead}</p>
-        <small>
-          {text.updateRepository}: {props.ownerRepo}
-        </small>
-        <small>
-          {text.updateEndpoint}: {props.endpoint}
-        </small>
-      </div>
-      <div className="update-status">
-        <strong>{props.status.message}</strong>
-        {props.status.version ? (
-          <small>
-            {text.updateLatestVersion}: {props.status.version}
-          </small>
-        ) : null}
-        {props.status.notes ? <small>{props.status.notes}</small> : null}
-        {props.status.checkedAt ? (
-          <small>
-            {text.updateCheckedAt}: {formatTime(props.status.checkedAt)}
-          </small>
-        ) : null}
-        {props.status.diagnostic ? <small title={props.status.diagnostic}>{props.status.diagnostic}</small> : null}
-        {isInstalling ? (
-          <div className="update-progress">
-            <span style={{ width: `${progress}%` }} />
-          </div>
-        ) : null}
-        {isInstalling ? <small>{total > 0 ? `${formatBytes(downloaded)} / ${formatBytes(total)}` : formatBytes(downloaded)}</small> : null}
-      </div>
-      <div className="update-actions">
-        <label className="update-toggle">
-          <input
-            checked={props.autoCheck}
-            disabled={Boolean(props.busy)}
-            name="app-update-auto-check"
-            onChange={(event) => props.onAutoCheckChange(event.currentTarget.checked)}
-            type="checkbox"
-          />
-          <span>{text.autoCheckUpdates}</span>
-        </label>
-        <button disabled={Boolean(props.busy)} onClick={props.onCheck} type="button">
-          {isChecking ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-          {isChecking ? text.updateChecking : text.checkUpdate}
-        </button>
-        <button disabled={Boolean(props.busy)} onClick={props.onInstall} type="button">
-          {isInstalling ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-          {isInstalling ? text.updateInstalling : props.hasUpdate ? text.installUpdate : text.checkAndInstallUpdate}
-        </button>
-        {props.hasUpdate ? (
-          <button disabled={Boolean(props.busy)} onClick={props.onSkip} type="button">
-            {text.skipThisVersion}
-          </button>
-        ) : null}
-        {props.skippedVersion ? (
-          <button disabled={Boolean(props.busy)} onClick={props.onClearSkip} type="button">
-            {text.resumeSkippedUpdate}: {props.skippedVersion}
-          </button>
-        ) : null}
-        <button disabled={Boolean(props.busy)} onClick={props.onOpenReleases} type="button">
-          {text.openReleases}
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function GuidePanel(props: {
-  title: string;
-  items: string[];
-  ordered?: boolean;
-}) {
-  const ListTag = props.ordered ? 'ol' : 'ul';
-  return (
-    <section className="guide-panel">
-      <h3>{props.title}</h3>
-      <ListTag>
-        {props.items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ListTag>
-    </section>
-  );
-}
-
-function InstanceList(props: {
-  title: string;
-  subtitle: string;
-  emptyText: string;
-  instances: InstanceProfile[];
-  syncPackage: CodexSyncPackageStatus | null;
-  busy: string;
-  onRefresh: () => Promise<void>;
-  onStart: (id: string) => Promise<void>;
-  onStop: (id: string) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
-  historyByInstance: Record<string, CodexHistoryStatus>;
-  syncBlockedReason?: string | null;
-  syncNotice?: string | null;
-  onHistoryRefresh?: (id: string) => Promise<void>;
-  onHistoryVerify?: (id: string) => Promise<void>;
-  onHistoryRepair?: (id: string) => Promise<void>;
-  onHistoryExportMarkdown?: (id: string) => Promise<void>;
-  onCloneSnapshotExport?: (id: string) => Promise<void>;
-  onCloneSnapshotUse?: (id: string) => Promise<void>;
-  cloneCapabilityDrafts?: Record<string, CloneCapabilityEditDraft>;
-  onCloneCapabilityEdit?: (instance: InstanceProfile) => void;
-  onCloneCapabilityDraftChange?: (id: string, patch: Partial<CloneCapabilityEditDraft>) => void;
-  onCloneCapabilitySave?: (id: string) => Promise<void>;
-  onCloneCapabilityCancel?: (id: string) => void;
-  sessionsByInstance?: Record<string, CodexSessionSummary[]>;
-  usageByInstance?: Record<string, CodexSessionUsageSummary>;
-  onSessionListRefresh?: (id: string) => Promise<void>;
-  onSessionUsageRefresh?: (id: string) => Promise<void>;
-  sessionSearchQuery?: string;
-  onSessionSearchQueryChange?: (value: string) => void;
-  onCopySessionProjectDir?: (projectDir: string) => Promise<void> | void;
-  exportDirByInstance?: Record<string, string>;
-  onOpenHistoryExportDir?: (id: string) => Promise<void>;
-  onOpenZed?: (id: string) => Promise<void>;
-  onOpenSyncPackageAppliedMarker?: (id: string) => Promise<void>;
-  onCopySyncPackageAppliedMarker?: (id: string) => Promise<void>;
-  onCopySyncPackageResourceDiff?: (id: string) => Promise<void>;
-}) {
-  return (
-    <div className="instance-list-section">
-      <div className="section-header">
-        <div>
-          <h2>{props.title}</h2>
-          <p>{props.subtitle}</p>
-        </div>
-        <div className="instance-list-tools">
-          {props.onSessionSearchQueryChange ? (
-            <input
-              name="codex-session-search"
-              onChange={(event) => props.onSessionSearchQueryChange?.(event.currentTarget.value)}
-              placeholder={text.sessionSearchPlaceholder}
-              type="search"
-              value={props.sessionSearchQuery ?? ''}
-            />
-          ) : null}
-          <button onClick={() => void props.onRefresh()} type="button">
-            <RefreshCw size={16} />
-            {text.refresh}
-          </button>
-        </div>
-      </div>
-      <InstanceTable {...props} />
-    </div>
-  );
-}
-
-function CloneReadinessPanel(props: { readiness: CloneReadinessSummary }) {
-  const visibleChecks = props.readiness.checks
-    .filter((check) => check.status !== 'ok' || props.readiness.tone === 'ok')
-    .slice(0, 5);
-  const Icon = props.readiness.tone === 'blocked' || props.readiness.tone === 'warning' ? CircleAlert : ShieldCheck;
-  return (
-    <div className={`clone-readiness ${props.readiness.tone}`} title={props.readiness.detail}>
-      <div className="clone-readiness-title">
-        <Icon size={14} />
-        <strong>{props.readiness.label}</strong>
-        <span>{props.readiness.detail}</span>
-      </div>
-      <div className="clone-readiness-checks">
-        {visibleChecks.map((check) => (
-          <small className={check.status} key={check.id} title={check.detail}>
-            {check.label}: {check.detail}
-          </small>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function syncPackageBackupStatusLabel(status: string): string {
-  switch (status) {
-    case 'ready':
-      return 'Ready';
-    case 'missingManifest':
-      return 'Missing manifest';
-    case 'error':
-      return 'Error';
-    default:
-      return status || 'Unknown';
-  }
-}
-
-function syncPackagePreflightStatusLabel(report: CodexSyncPackagePreflightReport | null): string {
-  if (!report) return 'preflight not checked';
-  if (report.status === 'ok') return 'preflight OK';
-  if (report.status === 'warning') return 'preflight warnings';
-  if (report.status === 'error') return 'preflight blocked';
-  if (report.status === 'missing') return 'package missing';
-  return `preflight ${report.status}`;
-}
-
-function syncPackagePreflightClass(report: CodexSyncPackagePreflightReport | null): string {
-  if (!report) return 'not-checked';
-  return report.status || 'unknown';
-}
-
-function SyncPackagePreflightSummary(props: {
-  preflight: CodexSyncPackagePreflightReport | null;
-  busy: string;
-  compact?: boolean;
-  showActions?: boolean;
-  onPreflight: () => Promise<void> | unknown;
-  onCopyPreflightReport: () => Promise<void> | unknown;
-}) {
-  const preflight = props.preflight;
-  const issueChecks = preflight?.checks.filter((check) => check.status !== 'ok') ?? [];
-  const visibleChecks = (issueChecks.length ? issueChecks : preflight?.checks ?? []).slice(0, props.compact ? 3 : 6);
-  return (
-    <div className={`sync-package-preflight ${syncPackagePreflightClass(preflight)}${props.compact ? ' compact' : ''}`}>
-      <div className="sync-package-preflight-title">
-        <div>
-          <strong>Preflight</strong>
-          <span>{syncPackagePreflightStatusLabel(preflight)}</span>
-        </div>
-        {props.showActions === false ? null : (
-          <div>
-            <button disabled={Boolean(props.busy)} onClick={() => void props.onPreflight()} type="button">
-              {props.busy === 'codex-sync-package-preflight' ? <Loader2 className="spin" size={14} /> : <ShieldCheck size={14} />}
-              {text.preflightCheck}
-            </button>
-            <button disabled={Boolean(props.busy) || !preflight} onClick={() => void props.onCopyPreflightReport()} type="button">
-              <Copy size={14} />
-              {text.copy}
-            </button>
-          </div>
-        )}
-      </div>
-      <div className="sync-package-preflight-stats">
-        <span>{preflight?.readyToApply ? 'ready to apply' : 'not ready'}</span>
-        <span>errors {preflight?.errorCount ?? 0}</span>
-        <span>warnings {preflight?.warningCount ?? 0}</span>
-        <span>entries {preflight?.entriesChecked ?? 0}</span>
-        <span>resources {preflight?.resourcesChecked ?? 0}</span>
-        {preflight?.checkedAt ? <span>{formatTime(preflight.checkedAt)}</span> : null}
-      </div>
-      {visibleChecks.length ? (
-        <div className="sync-package-preflight-checks">
-          {visibleChecks.map((check) => (
-            <div className={`sync-package-preflight-check ${check.status}`} key={check.id}>
-              <strong>{check.label}</strong>
-              <span>{check.status}</span>
-              <small>{check.detail}</small>
-              {check.action ? <small className="warning">{check.action}</small> : null}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <small className="manifest-empty">Run Preflight before Sync/Repair when package update behavior looks wrong.</small>
-      )}
-    </div>
-  );
-}
-
-function SyncPackageBackupTimeline(props: {
-  backups: CodexSyncPackageBackupSummary[];
-  busy: string;
-  showCopyAction?: boolean;
-  onOpenBackup: (path: string) => Promise<void>;
-  onRestoreBackup: (backupId: string) => Promise<void>;
-  onCopyBackupReport: () => Promise<void>;
-}) {
-  const visible = props.backups.slice(0, 6);
-  return (
-    <div className="sync-package-backups">
-      <div className="sync-package-backups-title">
-        <div>
-          <strong>Backup timeline</strong>
-          <span>{props.backups.length ? `${props.backups.length} snapshots` : 'no backups yet'}</span>
-        </div>
-        {props.showCopyAction === false ? null : (
-          <button disabled={Boolean(props.busy) || !props.backups.length} onClick={() => void props.onCopyBackupReport()} type="button">
-            <Copy size={14} />
-            {text.copy}
-          </button>
-        )}
-      </div>
-      {visible.length ? (
-        <div className="sync-package-backup-list">
-          {visible.map((backup) => (
-            <div className={`sync-package-backup ${backup.status}`} key={backup.id}>
-              <div>
-                <strong>{backup.id}</strong>
-                <span>{syncPackageBackupStatusLabel(backup.status)}</span>
-              </div>
-              <small>backup {formatTime(backup.backupCreatedAt)}</small>
-              <small>package {formatTime(backup.packageCreatedAt)}</small>
-              <small>
-                resources {backup.readyResourceCount}/{backup.resourceCount} · {formatBytes(backup.copiedBytes)}
-              </small>
-              {backup.error ? <small className="warning">{backup.error}</small> : null}
-              {backup.warnings?.length ? <small className="warning">{backup.warnings[0]}</small> : null}
-              <div className="sync-package-backup-actions">
-                <button disabled={Boolean(props.busy)} onClick={() => void props.onOpenBackup(backup.backupPath)} title={backup.backupPath} type="button">
-                  <FolderOpen size={13} />
-                  {text.open}
-                </button>
-                <button
-                  disabled={Boolean(props.busy) || backup.status !== 'ready'}
-                  onClick={() => void props.onRestoreBackup(backup.id)}
-                  title="Restore this snapshot as the current source sync package; clones still update only after Sync/Repair."
-                  type="button"
-                >
-                  {props.busy === `codex-sync-package-restore-${backup.id}` ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
-                  {text.syncPackageRestoreBackup}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <small className="manifest-empty">No previous extracted package has been backed up yet.</small>
-      )}
-    </div>
-  );
-}
-
-function SyncPackagePanel(props: {
-  status: CodexSyncPackageStatus | null;
-  backups: CodexSyncPackageBackupSummary[];
-  preflight: CodexSyncPackagePreflightReport | null;
-  busy: string;
-  onExtract: () => Promise<void>;
-  onRefresh: () => Promise<void>;
-  onPreflight: () => Promise<void>;
-  onCopyResourceReport: () => Promise<void>;
-  onCopyResourceLensReport: () => Promise<void>;
-  onCopyBackupReport: () => Promise<void>;
-  onCopyPreflightReport: () => Promise<void>;
-  onOpenBackup: (path: string) => Promise<void>;
-  onRestoreBackup: (backupId: string) => Promise<void>;
-}) {
-  const status = props.status;
-  const isReady = Boolean(status?.exists);
-  const isStale = Boolean(status?.stale);
-  const resources = syncPackageResourceItems(status);
-  const entryPreview = syncPackageEntryPreview(status);
-  const hiddenEntryCount = Math.max(0, (status?.entries?.length ?? 0) - entryPreview.length);
-  return (
-    <div className={isReady ? `sync-package-panel ready${isStale ? ' stale' : ''}` : 'sync-package-panel'}>
-      <div className="sync-package-main">
-        <div>
-          <div className="panel-title">
-            <strong>{text.syncPackageTitle}</strong>
-            <span>{isReady ? (isStale ? text.syncPackageStale : text.syncPackageReady) : text.syncPackageMissing}</span>
-          </div>
-          <code>{status?.packagePath || 'C:\\Users\\admin\\.codex_clone_launcher\\sync-package\\codex-home'}</code>
-          {isReady ? (
-            <div className="package-stats">
-              <span>{formatTime(status?.createdAt)}</span>
-              {status?.sourceModifiedAt ? <span>本体 {formatTime(status.sourceModifiedAt)}</span> : null}
-              <span>{status?.fileCount ?? 0} 文件</span>
-              <span>{status?.directoryCount ?? 0} 目录</span>
-              <span>{formatBytes(status?.copiedBytes ?? 0)}</span>
-              {isStale ? <span className="warning">{text.syncPackageStaleHint}</span> : null}
-              {status?.warnings?.length ? <span className="warning">{status.warnings[0]}</span> : null}
-            </div>
-          ) : null}
-        </div>
-        <div className="package-actions">
-          <button disabled={Boolean(props.busy)} onClick={() => void props.onExtract()} type="button">
-            {props.busy === 'codex-sync-package-extract' ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-            {props.busy === 'codex-sync-package-extract' ? text.refreshing : text.syncPackageRefresh}
-          </button>
-          <button disabled={Boolean(props.busy)} onClick={() => void props.onRefresh()} type="button">
-            {props.busy === 'codex-sync-package-status' ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-            {props.busy === 'codex-sync-package-status' ? text.refreshing : text.historyRefresh}
-          </button>
-          <button disabled={Boolean(props.busy)} onClick={() => void props.onPreflight()} type="button">
-            {props.busy === 'codex-sync-package-preflight' ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
-            {text.preflight}
-          </button>
-          <CardMenu disabled={Boolean(props.busy)} label={text.moreActions}>
-            <button disabled={Boolean(props.busy)} onClick={() => void props.onCopyResourceReport()} type="button">
-              <Copy size={16} />
-              {text.copyResources}
-            </button>
-            <button disabled={Boolean(props.busy) || !props.preflight} onClick={() => void props.onCopyPreflightReport()} type="button">
-              <Copy size={16} />
-              {text.copyPreflight}
-            </button>
-            <button disabled={Boolean(props.busy) || !props.backups.length} onClick={() => void props.onCopyBackupReport()} type="button">
-              <Copy size={16} />
-              {text.copyBackups}
-            </button>
-            <button disabled={Boolean(props.busy)} onClick={() => void props.onCopyResourceLensReport()} type="button">
-              <Copy size={16} />
-              {text.resourceLensCopy}
-            </button>
-          </CardMenu>
-        </div>
-      </div>
-
-      <div className="sync-package-detail">
-        <SyncPackagePreflightSummary
-          preflight={props.preflight}
-          busy={props.busy}
-          showActions={false}
-          onPreflight={props.onPreflight}
-          onCopyPreflightReport={props.onCopyPreflightReport}
+      {page === 'guide' ? (
+        <OperationGuide
+          cloneCount={codexCloneList.length}
+          formatBytes={formatBytes}
+          labels={operationGuideLabels}
+          syncPackage={syncPackage}
         />
-
-        <details className="sync-package-collapsible">
-          <summary>{text.syncPackageDetails}</summary>
-          <div className="sync-package-boundary">
-            <div>
-              <span>{text.syncManifestIncluded}</span>
-              <strong>{syncPackageIncludedSummary(status)}</strong>
-              <small>sessions、skills、MCP、memories、rules、AGENTS.md</small>
-            </div>
-            <div>
-              <span>{text.syncManifestExcluded}</span>
-              <strong>{syncPackageExcludedSummary(status)}</strong>
-              <small>账号、额度、plugins/cache/log 和运行临时文件不进入同步包</small>
-            </div>
-          </div>
-
-          <SyncPackageResourceList className="sync-package-resources" resources={resources} />
-
-          <div className="sync-package-manifest-preview">
-            <div className="manifest-preview-title">
-              <strong>{text.syncManifestEntryPreview}</strong>
-              <span>{status?.manifestPath ?? 'manifest 未加载'}</span>
-            </div>
-            {entryPreview.length ? (
-              <div className="manifest-entry-list">
-                {entryPreview.map((entry) => (
-                  <div key={`${entry.kind}:${entry.path}`}>
-                    <code>{entry.path}</code>
-                    <span>{syncPackageEntryLabel(entry)}</span>
-                    {entry.error ? <small>{entry.error}</small> : null}
-                  </div>
-                ))}
-                {hiddenEntryCount ? (
-                  <div className="manifest-more">
-                    <code>{text.syncManifestMoreEntries}</code>
-                    <span>+{hiddenEntryCount.toLocaleString()}</span>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <small className="manifest-empty">{text.syncManifestNoEntries}</small>
-            )}
-          </div>
-        </details>
-
-        <details className="sync-package-collapsible">
-          <summary>{text.resourceLensTitle}</summary>
-          <ResourceLensPanel resources={resources} busy={props.busy} />
-        </details>
-
-        <details className="sync-package-collapsible">
-          <summary>{text.syncPackageBackups}</summary>
-          <SyncPackageBackupTimeline
-            backups={props.backups}
-            busy={props.busy}
-            showCopyAction={false}
-            onCopyBackupReport={props.onCopyBackupReport}
-            onOpenBackup={props.onOpenBackup}
-            onRestoreBackup={props.onRestoreBackup}
-          />
-        </details>
-      </div>
-    </div>
-  );
-}
-
-function InstanceTable(props: {
-  emptyText: string;
-  instances: InstanceProfile[];
-  syncPackage: CodexSyncPackageStatus | null;
-  busy: string;
-  onStart: (id: string) => Promise<void>;
-  onStop: (id: string) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
-  historyByInstance: Record<string, CodexHistoryStatus>;
-  syncBlockedReason?: string | null;
-  syncNotice?: string | null;
-  onHistoryRefresh?: (id: string) => Promise<void>;
-  onHistoryVerify?: (id: string) => Promise<void>;
-  onHistoryRepair?: (id: string) => Promise<void>;
-  onHistoryExportMarkdown?: (id: string) => Promise<void>;
-  onCloneSnapshotExport?: (id: string) => Promise<void>;
-  onCloneSnapshotUse?: (id: string) => Promise<void>;
-  cloneCapabilityDrafts?: Record<string, CloneCapabilityEditDraft>;
-  onCloneCapabilityEdit?: (instance: InstanceProfile) => void;
-  onCloneCapabilityDraftChange?: (id: string, patch: Partial<CloneCapabilityEditDraft>) => void;
-  onCloneCapabilitySave?: (id: string) => Promise<void>;
-  onCloneCapabilityCancel?: (id: string) => void;
-  sessionsByInstance?: Record<string, CodexSessionSummary[]>;
-  usageByInstance?: Record<string, CodexSessionUsageSummary>;
-  onSessionListRefresh?: (id: string) => Promise<void>;
-  onSessionUsageRefresh?: (id: string) => Promise<void>;
-  sessionSearchQuery?: string;
-  onSessionSearchQueryChange?: (value: string) => void;
-  onCopySessionProjectDir?: (projectDir: string) => Promise<void> | void;
-  exportDirByInstance?: Record<string, string>;
-  onOpenHistoryExportDir?: (id: string) => Promise<void>;
-  onOpenZed?: (id: string) => Promise<void>;
-  onOpenSyncPackageAppliedMarker?: (id: string) => Promise<void>;
-  onCopySyncPackageAppliedMarker?: (id: string) => Promise<void>;
-  onCopySyncPackageResourceDiff?: (id: string) => Promise<void>;
-}) {
-  if (props.instances.length === 0) {
-    return <div className="empty-state">{props.emptyText}</div>;
-  }
-  const showHistory = Boolean(props.onHistoryRefresh || props.onHistoryVerify || props.onHistoryRepair);
-
-  return (
-    <div className={showHistory ? 'instance-table with-history' : 'instance-table'}>
-      <div className="table-head">
-        <span>{text.instance}</span>
-        <span>{text.profileDir}</span>
-        <span>{text.status}</span>
-        {showHistory ? <span>{text.history}</span> : null}
-        <span>{text.lastLaunch}</span>
-        <span>{text.actions}</span>
-      </div>
-      {props.instances.map((instance) => {
-        const history = props.historyByInstance[instance.id] ?? instance.historyStatus;
-        const isStarting = props.busy === `codex-start-${instance.id}`;
-        const isStopping = props.busy === `codex-stop-${instance.id}`;
-        const isRefreshing = props.busy === `codex-history-refresh-${instance.id}`;
-        const isVerifying = props.busy === `codex-history-verify-${instance.id}`;
-        const isRepairing = props.busy === `codex-history-repair-${instance.id}`;
-        const isExporting = props.busy === `codex-history-export-${instance.id}`;
-        const isExportingSnapshot = props.busy === `codex-clone-snapshot-export-${instance.id}`;
-        const isUsingSnapshot = props.busy === `codex-clone-snapshot-use-${instance.id}`;
-        const isSavingCapabilities = props.busy === `codex-clone-capabilities-${instance.id}`;
-        const isListingSessions = props.busy === `codex-session-list-${instance.id}`;
-        const isScanningUsage = props.busy === `codex-session-usage-${instance.id}`;
-        const isOpeningZed = props.busy === `codex-open-zed-${instance.id}`;
-        const isDeleting = props.busy === `codex-delete-${instance.id}`;
-        const capabilityDraft = props.cloneCapabilityDrafts?.[instance.id] ?? null;
-        const syncHint = props.syncBlockedReason ?? props.syncNotice ?? text.syncPackageApplyReady;
-        const exportDir = props.exportDirByInstance?.[instance.id] ?? '';
-        const sessions = props.sessionsByInstance?.[instance.id] ?? [];
-        const usage = props.usageByInstance?.[instance.id] ?? null;
-        const appliedMarkerPath = syncPackageAppliedMarkerPath(instance, history);
-        const appliedFreshness = syncPackageAppliedFreshness(history, props.syncPackage);
-        const resourceDiffHint = syncPackageResourceDiffHint(history, props.syncPackage);
-        const readiness = cloneReadinessSummary(instance, history, props.syncPackage);
-        return (
-          <div className="table-row" key={instance.id}>
-            <strong>{instance.name || instance.id}</strong>
-            <code>{instance.userDataDir}</code>
-            <span className={instance.running ? 'status running' : 'status'}>
-              {instance.running ? text.running : text.stopped}
-            </span>
-            {showHistory ? (
-              <div className={history?.ok ? 'history-cell ok' : 'history-cell'}>
-                <strong>{historySummary(history)}</strong>
-                <CloneReadinessPanel readiness={readiness} />
-                <small>
-                  {text.sessionIndexLabel} {history?.sessionIndexCount ?? 0} / {text.sessionFilesLabel} {history?.sessionFileCount ?? 0}
-                </small>
-                <small>
-                  {history?.authMode ?? 'auth ?'} / {history?.providerBaseUrlHost ?? 'host ?'}
-                </small>
-                <small>sync {history?.syncMode ?? 'shared'}</small>
-                {instance.launchScript?.trim() ? <small className="launch-script-badge">{text.launchScriptConfigured}</small> : null}
-                {instance.modelCatalogEnabled ? (
-                  <small className="model-catalog-badge" title={instance.modelCatalogPath ?? undefined}>
-                    {text.modelCatalog} · {instance.modelCatalogCount ?? 0}
-                  </small>
-                ) : null}
-                {instance.goalEnabled ? (
-                  <small className="goal-pursuit-badge" title={instance.goalPath ?? undefined}>
-                    {text.goalPursuitConfigured}
-                  </small>
-                ) : null}
-                {instance.promptPackEnabled ? (
-                  <small className="prompt-pack-badge" title={instance.promptPackPath ?? undefined}>
-                    {text.promptPackConfigured}
-                  </small>
-                ) : null}
-                <small>backup {formatShortPath(history?.lastBackupPath)}</small>
-                <small className={`package-freshness ${appliedFreshness.tone}`} title={appliedFreshness.title}>
-                  {appliedFreshness.label}
-                </small>
-                <small className={`package-freshness resource-diff ${resourceDiffHint.tone}`} title={resourceDiffHint.title}>
-                  {resourceDiffHint.label}
-                </small>
-                <small title={history?.syncPackageApplied ? appliedMarkerPath : undefined}>{syncPackageAppliedSummary(history)}</small>
-                {history?.warnings?.length ? <small className="warning">{history.warnings[0]}</small> : null}
-              </div>
-            ) : null}
-            <span>{formatTime(instance.lastLaunchedAt)}</span>
-            <div className="row-actions">
-              <div className="row-action-buttons">
-                {instance.running ? (
-                  <button disabled={Boolean(props.busy)} onClick={() => void props.onStop(instance.id)} type="button">
-                    {isStopping ? <Loader2 className="spin" size={15} /> : null}
-                    {isStopping ? text.stopping : text.stop}
-                  </button>
-                ) : (
-                  <button disabled={Boolean(props.busy)} onClick={() => void props.onStart(instance.id)} type="button">
-                    {isStarting ? <Loader2 className="spin" size={15} /> : null}
-                    {isStarting ? text.starting : text.start}
-                  </button>
-                )}
-                {props.onHistoryRepair ? (
-                  <button
-                    disabled={Boolean(props.busy) || Boolean(props.syncBlockedReason)}
-                    onClick={() => void props.onHistoryRepair?.(instance.id)}
-                    title={props.syncBlockedReason ?? undefined}
-                    type="button"
-                  >
-                    {isRepairing ? <Loader2 className="spin" size={15} /> : null}
-                    {isRepairing ? text.repairing : text.historyRepair}
-                  </button>
-                ) : null}
-                <button className="danger" disabled={Boolean(props.busy)} onClick={() => void props.onDelete(instance.id)} type="button">
-                  {isDeleting ? <Loader2 className="spin" size={15} /> : null}
-                  {isDeleting ? text.deleting : text.delete}
-                </button>
-                <CardMenu disabled={Boolean(props.busy)} label={text.moreActions}>
-                  {props.onHistoryRefresh ? (
-                    <button disabled={Boolean(props.busy)} onClick={() => void props.onHistoryRefresh?.(instance.id)} type="button">
-                      {isRefreshing ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-                      {isRefreshing ? text.refreshing : text.historyRefresh}
-                    </button>
-                  ) : null}
-                  {props.onHistoryVerify ? (
-                    <button disabled={Boolean(props.busy)} onClick={() => void props.onHistoryVerify?.(instance.id)} type="button">
-                      {isVerifying ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
-                      {isVerifying ? text.verifying : text.historyCheck}
-                    </button>
-                  ) : null}
-                  {props.onHistoryExportMarkdown ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onHistoryExportMarkdown?.(instance.id)}
-                      title={text.historyExportMarkdownTitle}
-                      type="button"
-                    >
-                      {isExporting ? <Loader2 className="spin" size={15} /> : <Download size={15} />}
-                      {text.historyExportMarkdown}
-                    </button>
-                  ) : null}
-                  {props.onCloneSnapshotExport ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onCloneSnapshotExport?.(instance.id)}
-                      title={text.cloneSnapshotExportTitle}
-                      type="button"
-                    >
-                      {isExportingSnapshot ? <Loader2 className="spin" size={15} /> : <FileText size={15} />}
-                      {text.cloneSnapshotExport}
-                    </button>
-                  ) : null}
-                  {props.onCloneSnapshotUse ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onCloneSnapshotUse?.(instance.id)}
-                      title={text.cloneSnapshotUseTitle}
-                      type="button"
-                    >
-                      {isUsingSnapshot ? <Loader2 className="spin" size={15} /> : <Import size={15} />}
-                      {text.cloneSnapshotUse}
-                    </button>
-                  ) : null}
-                  {props.onCloneCapabilityEdit ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => props.onCloneCapabilityEdit?.(instance)}
-                      title={text.cloneCapabilityLead}
-                      type="button"
-                    >
-                      <Target size={15} />
-                      {text.cloneCapabilityEdit}
-                    </button>
-                  ) : null}
-                  {props.onOpenZed ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onOpenZed?.(instance.id)}
-                      title={instance.workingDir || instance.userDataDir}
-                      type="button"
-                    >
-                      {isOpeningZed ? <Loader2 className="spin" size={15} /> : <ExternalLink size={15} />}
-                      {text.openZed}
-                    </button>
-                  ) : null}
-                  {props.onOpenHistoryExportDir && exportDir ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onOpenHistoryExportDir?.(instance.id)}
-                      title={exportDir}
-                      type="button"
-                    >
-                      <FolderOpen size={15} />
-                      {formatShortPath(exportDir)}
-                    </button>
-                  ) : null}
-                  {history?.syncPackageApplied && props.onOpenSyncPackageAppliedMarker ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onOpenSyncPackageAppliedMarker?.(instance.id)}
-                      title={appliedMarkerPath}
-                      type="button"
-                    >
-                      <FileText size={15} />
-                      {text.syncPackageAppliedOpen}
-                    </button>
-                  ) : null}
-                  {history?.syncPackageApplied && props.onCopySyncPackageAppliedMarker ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onCopySyncPackageAppliedMarker?.(instance.id)}
-                      title={appliedMarkerPath}
-                      type="button"
-                    >
-                      <Copy size={15} />
-                      {text.syncPackageAppliedCopy}
-                    </button>
-                  ) : null}
-                  {history?.syncPackageApplied && props.onCopySyncPackageResourceDiff ? (
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onCopySyncPackageResourceDiff?.(instance.id)}
-                      title={resourceDiffHint.title}
-                      type="button"
-                    >
-                      <Copy size={15} />
-                      {text.resourceDiff}
-                    </button>
-                  ) : null}
-                  {props.onSessionListRefresh ? (
-                    <button disabled={Boolean(props.busy)} onClick={() => void props.onSessionListRefresh?.(instance.id)} type="button">
-                      {isListingSessions ? <Loader2 className="spin" size={15} /> : <BookOpen size={15} />}
-                      {isListingSessions ? text.refreshing : text.sessionListRefresh}
-                    </button>
-                  ) : null}
-                  {props.onSessionUsageRefresh ? (
-                    <button disabled={Boolean(props.busy)} onClick={() => void props.onSessionUsageRefresh?.(instance.id)} type="button">
-                      {isScanningUsage ? <Loader2 className="spin" size={15} /> : <Gauge size={15} />}
-                      {isScanningUsage ? text.refreshing : text.sessionUsageRefresh}
-                    </button>
-                  ) : null}
-                </CardMenu>
-              </div>
-              {props.onHistoryRepair ? (
-                <small className={props.syncBlockedReason || props.syncNotice ? 'sync-action-hint warning' : 'sync-action-hint'}>
-                  {syncHint}
-                </small>
-              ) : null}
-              {capabilityDraft ? (
-                <div className={`clone-capability-editor ${capabilityDraft.goalEnabled ? 'enabled' : ''}`}>
-                  <div className="clone-capability-title">
-                    <strong>{text.cloneCapabilityTitle}</strong>
-                    <span>{formatShortPath(instance.goalPath)}</span>
-                  </div>
-                  <label className="goal-pursuit-toggle">
-                    <span>
-                      <Target size={15} />
-                      {text.goalPursuit}
-                    </span>
-                    <input
-                      checked={capabilityDraft.goalEnabled}
-                      name={`clone-goal-enabled-${instance.id}`}
-                      onChange={(event) =>
-                        props.onCloneCapabilityDraftChange?.(instance.id, {
-                          goalEnabled: event.currentTarget.checked,
-                        })
-                      }
-                      type="checkbox"
-                    />
-                  </label>
-                  <small>{text.cloneCapabilityLead}</small>
-                  {capabilityDraft.goalEnabled ? (
-                    <textarea
-                      name={`clone-goal-text-${instance.id}`}
-                      onChange={(event) =>
-                        props.onCloneCapabilityDraftChange?.(instance.id, {
-                          goalText: event.currentTarget.value,
-                        })
-                      }
-                      placeholder={text.goalPursuitPlaceholder}
-                      value={capabilityDraft.goalText}
-                    />
-                  ) : null}
-                  <div className="clone-capability-actions">
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => void props.onCloneCapabilitySave?.(instance.id)}
-                      type="button"
-                    >
-                      {isSavingCapabilities ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
-                      {text.cloneCapabilitySave}
-                    </button>
-                    <button
-                      disabled={Boolean(props.busy)}
-                      onClick={() => props.onCloneCapabilityCancel?.(instance.id)}
-                      type="button"
-                    >
-                      {text.cloneCapabilityCancel}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-              {sessions.length ? (
-                <details className="instance-details">
-                  <summary>{text.sessionDetails}</summary>
-                  <SessionSummaryList
-                    onCopyProjectDir={props.onCopySessionProjectDir}
-                    query={props.sessionSearchQuery ?? ''}
-                    sessions={sessions}
-                  />
-                </details>
-              ) : null}
-              {usage ? (
-                <details className="instance-details">
-                  <summary>{text.sessionUsageTitle}</summary>
-                  <SessionUsageSummaryPanel usage={usage} />
-                </details>
-              ) : null}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function SessionSummaryList(props: {
-  query: string;
-  sessions: CodexSessionSummary[];
-  onCopyProjectDir?: (projectDir: string) => Promise<void> | void;
-}) {
-  const query = props.query.trim().toLowerCase();
-  const matched = query
-    ? props.sessions.filter((session) =>
-        [
-          session.title,
-          session.sessionId,
-          session.summary ?? '',
-          session.projectDir ?? '',
-          session.searchPreview ?? '',
-          session.rolloutPath,
-        ]
-          .some((value) => value.toLowerCase().includes(query)),
-      )
-    : props.sessions;
-  const visible = matched.slice(0, 5);
-  return (
-    <div className="session-summary-list">
-      <div className="session-summary-title">
-        <strong>{text.sessionRecentTitle}</strong>
-        <span>{query ? `${matched.length}/${props.sessions.length}` : `${props.sessions.length} ${text.sessionCountUnit}`}</span>
-      </div>
-      {visible.map((session) => {
-        const projectDir = session.projectDir?.trim() ?? '';
-        return (
-          <div className={session.rolloutExists ? 'session-summary-item' : 'session-summary-item missing'} key={session.sessionId}>
-            <div className="session-summary-main">
-              <strong title={session.title}>{session.title}</strong>
-              <span>{session.messageCount} {text.sessionMessageUnit}</span>
-              <small>{session.lastMessageAt ?? text.sessionNoTimestamp}</small>
-            </div>
-            {session.summary ? <p title={session.summary}>{session.summary}</p> : null}
-            <div className="session-summary-meta">
-              <code title={session.rolloutPath}>{formatShortPath(session.rolloutPath)}</code>
-              {projectDir ? (
-                <button onClick={() => void props.onCopyProjectDir?.(projectDir)} title={projectDir} type="button">
-                  <Copy size={12} />
-                  {formatShortPath(projectDir)}
-                </button>
-              ) : (
-                <small>{text.sessionUnknownProjectDir}</small>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      {!visible.length ? <small className="session-summary-more">{text.sessionNoMatches}</small> : null}
-      {matched.length > visible.length ? (
-        <small className="session-summary-more">
-          {text.sessionMorePrefix}
-          {matched.length - visible.length}
-          {text.sessionMoreSuffix}
-        </small>
       ) : null}
-    </div>
-  );
-}
-
-function SessionUsageSummaryPanel(props: { usage: CodexSessionUsageSummary }) {
-  const models = props.usage.byModel.slice(0, 5);
-  const cost = sessionUsageCostSummary(props.usage);
-  const modelCostByName = new Map(cost.byModel.map((item) => [item.model, item]));
-  return (
-    <div className="session-usage-panel">
-      <div className="session-usage-title">
-        <strong>{text.sessionUsageTitle}</strong>
-        <span>
-          {formatTokenCount(props.usage.totalTokens)} {text.sessionUsageTokensUnit} / {props.usage.eventCount}{' '}
-          {text.sessionUsageEventsUnit}
-        </span>
-      </div>
-      <div className="session-usage-stats">
-        <span>{text.sessionUsageInput} {formatTokenCount(props.usage.inputTokens)}</span>
-        <span>{text.sessionUsageCache} {formatTokenCount(props.usage.cachedInputTokens)}</span>
-        <span>{text.sessionUsageOutputLabel} {formatTokenCount(props.usage.outputTokens)}</span>
-        <span>
-          {text.sessionUsageFiles} {props.usage.parsedFiles}/{props.usage.scannedFiles}
-        </span>
-      </div>
-      <div className="session-cost-lens">
-        <div className="session-cost-title">
-          <strong>{text.sessionCostTitle}</strong>
-          <span>{cost.pricedModels ? formatUsd(cost.totalCostUsd) : text.sessionCostUnpriced}</span>
-        </div>
-        <div className="session-cost-stats">
-          <span>
-            {text.sessionCostBillableInput} {formatTokenCount(cost.billableInputTokens)}
-          </span>
-          <span>
-            {text.sessionCostCacheRate} {Math.round(cost.cacheHitRate * 100)}%
-          </span>
-          <span>
-            {text.sessionCostOutput} {formatTokenCount(cost.outputTokens)}
-          </span>
-          <span>
-            {text.sessionCostEstimate} {cost.pricedModels}/{cost.pricedModels + cost.unpricedModels}
-          </span>
-        </div>
-        <small>{text.sessionCostDisclaimer}</small>
-      </div>
-      {props.usage.firstEventAt || props.usage.lastEventAt ? (
-        <small className="session-usage-range">
-          {props.usage.firstEventAt ?? text.sessionUsageRangeUnknown} {text.sessionUsageRangeSeparator}{' '}
-          {props.usage.lastEventAt ?? text.sessionUsageRangeUnknown}
-        </small>
-      ) : null}
-      {models.length ? (
-        <div className="session-usage-models">
-          {models.map((model) => (
-            <div className="session-usage-model" key={model.model}>
-              <strong>{model.model}</strong>
-              <span>{formatTokenCount(model.totalTokens)}</span>
-              <em>{modelCostByName.get(model.model)?.priced ? formatUsd(modelCostByName.get(model.model)?.totalCostUsd) : text.sessionCostUnpriced}</em>
-              <small>
-                {text.sessionUsageModelInput} {formatTokenCount(model.inputTokens)} / {text.sessionUsageModelCache}{' '}
-                {formatTokenCount(model.cachedInputTokens)} / {text.sessionUsageModelOutput}{' '}
-                {formatTokenCount(model.outputTokens)}
-              </small>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <small className="session-summary-more">{text.sessionUsageEmpty}</small>
-      )}
-      {props.usage.warnings.length ? <small className="session-usage-warning">{props.usage.warnings[0]}</small> : null}
-    </div>
-  );
-}
-
-function PathRow(props: {
-  title: string;
-  value: string;
-  onChange: (value: string) => void;
-  onPick: () => void;
-  onDetect: () => void;
-}) {
-  return (
-    <div className="path-row">
-      <label>
-        <span>{props.title}</span>
-        <input
-          name="codex-launch-path"
-          value={props.value}
-          onChange={(event) => props.onChange(event.target.value)}
-          placeholder={text.pathPlaceholder}
-        />
-      </label>
-      <button onClick={props.onPick} type="button">
-        <FolderOpen size={16} />
-        {text.pick}
-      </button>
-      <button onClick={props.onDetect} type="button">
-        <RefreshCw size={16} />
-        {text.autoDetect}
-      </button>
     </div>
   );
 }

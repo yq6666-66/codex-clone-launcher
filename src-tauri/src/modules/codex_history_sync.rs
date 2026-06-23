@@ -861,15 +861,20 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
 }
 
 fn thread_columns(conn: &Connection) -> Result<Vec<String>, String> {
+    table_columns(conn, "threads")
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let pragma = format!("PRAGMA table_info({})", quote_identifier(table));
     let mut stmt = conn
-        .prepare("PRAGMA table_info(threads)")
-        .map_err(|error| format!("read threads columns failed: {}", error))?;
+        .prepare(&pragma)
+        .map_err(|error| format!("read {} columns failed: {}", table, error))?;
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| format!("read threads columns failed: {}", error))?;
+        .map_err(|error| format!("read {} columns failed: {}", table, error))?;
     let mut columns = Vec::new();
     for row in rows {
-        columns.push(row.map_err(|error| format!("read threads column failed: {}", error))?);
+        columns.push(row.map_err(|error| format!("read {} column failed: {}", table, error))?);
     }
     Ok(columns)
 }
@@ -1058,50 +1063,145 @@ fn sync_threads_from_source(
     if source_ids.is_empty() {
         return Ok(0);
     }
-    let mut missing = 0;
-    let mut stmt = conn
-        .prepare("SELECT id FROM threads")
-        .map_err(|error| format!("prepare local thread id query failed: {}", error))?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| format!("query local thread ids failed: {}", error))?;
-    let mut local_ids = HashSet::new();
-    for row in rows {
-        local_ids.insert(row.map_err(|error| format!("read local thread id failed: {}", error))?);
-    }
-    for id in source_ids {
-        if !local_ids.contains(&id) {
-            missing += 1;
-        }
-    }
-    if dry_run || missing == 0 {
-        return Ok(missing);
-    }
-    sync_memory_directories_from_default(&default_home, codex_home, warnings)?;
+    let sync_newer_threads = common_columns.iter().any(|column| column == "updated_at");
+    let sync_filter = if sync_newer_threads {
+        "l.id IS NULL OR COALESCE(s.updated_at, 0) > COALESCE(l.updated_at, 0)"
+    } else {
+        "l.id IS NULL"
+    };
 
     conn.execute(
         "ATTACH DATABASE ?1 AS source_history",
         params![source_db.to_string_lossy().to_string()],
     )
     .map_err(|error| format!("attach default history database failed: {}", error))?;
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS temp_history_sync_thread_ids;
+         CREATE TEMP TABLE temp_history_sync_thread_ids (id TEXT PRIMARY KEY);",
+    )
+    .map_err(|error| format!("prepare history sync temp table failed: {}", error))?;
+    let insert_ids_sql = format!(
+        "INSERT OR IGNORE INTO temp_history_sync_thread_ids (id)
+         SELECT s.id FROM source_history.threads s
+         LEFT JOIN threads l ON l.id = s.id
+         WHERE {}",
+        sync_filter
+    );
+    let changed = match conn.execute(&insert_ids_sql, []) {
+        Ok(count) => count as i64,
+        Err(error) => {
+            let _ = conn.execute_batch("DROP TABLE IF EXISTS temp_history_sync_thread_ids");
+            let _ = conn.execute_batch("DETACH DATABASE source_history");
+            return Err(format!(
+                "select default history thread delta failed: {}",
+                error
+            ));
+        }
+    };
+    if dry_run || changed == 0 {
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS temp_history_sync_thread_ids");
+        let detach_result = conn.execute_batch("DETACH DATABASE source_history");
+        if let Err(error) = detach_result {
+            warnings.push(format!("detach default history database failed: {}", error));
+        }
+        return Ok(changed);
+    }
+    sync_memory_directories_from_default(&default_home, codex_home, warnings)?;
+
     let column_sql = common_columns
         .iter()
         .map(|column| quote_identifier(column))
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "INSERT OR IGNORE INTO threads ({}) SELECT {} FROM source_history.threads",
+        "INSERT OR REPLACE INTO threads ({}) SELECT {} FROM source_history.threads WHERE id IN (SELECT id FROM temp_history_sync_thread_ids)",
         column_sql, column_sql
     );
     let inserted = conn
         .execute(&sql, [])
         .map(|count| count as i64)
         .map_err(|error| format!("merge default history threads failed: {}", error));
+    if inserted.is_ok() {
+        sync_related_thread_table_from_source(
+            conn,
+            &source_conn,
+            "thread_dynamic_tools",
+            "thread_id IN (SELECT id FROM temp_history_sync_thread_ids)",
+            true,
+            warnings,
+        )?;
+        sync_related_thread_table_from_source(
+            conn,
+            &source_conn,
+            "thread_spawn_edges",
+            "parent_thread_id IN (SELECT id FROM temp_history_sync_thread_ids) OR child_thread_id IN (SELECT id FROM temp_history_sync_thread_ids)",
+            false,
+            warnings,
+        )?;
+    }
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS temp_history_sync_thread_ids");
     let detach_result = conn.execute_batch("DETACH DATABASE source_history");
     if let Err(error) = detach_result {
         warnings.push(format!("detach default history database failed: {}", error));
     }
     inserted
+}
+
+fn sync_related_thread_table_from_source(
+    conn: &Connection,
+    source_conn: &Connection,
+    table: &str,
+    where_sql: &str,
+    delete_existing: bool,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    if !table_exists(conn, table)? || !table_exists(source_conn, table)? {
+        return Ok(());
+    }
+
+    let local_columns = table_columns(conn, table)?;
+    let source_columns = table_columns(source_conn, table)?;
+    let source_column_set: HashSet<&str> = source_columns.iter().map(String::as_str).collect();
+    let common_columns = local_columns
+        .iter()
+        .filter(|column| source_column_set.contains(column.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if common_columns.is_empty() {
+        return Ok(());
+    }
+
+    if delete_existing {
+        let sql = format!(
+            "DELETE FROM {} WHERE {}",
+            quote_identifier(table),
+            where_sql
+        );
+        conn.execute(&sql, [])
+            .map_err(|error| format!("delete stale {} rows failed: {}", table, error))?;
+    }
+
+    let column_sql = common_columns
+        .iter()
+        .map(|column| quote_identifier(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source_table = format!("source_history.{}", quote_identifier(table));
+    let sql = format!(
+        "INSERT OR REPLACE INTO {} ({}) SELECT {} FROM {} WHERE {}",
+        quote_identifier(table),
+        column_sql,
+        column_sql,
+        source_table,
+        where_sql
+    );
+    if let Err(error) = conn.execute(&sql, []) {
+        warnings.push(format!(
+            "merge default history {} skipped: {}",
+            table, error
+        ));
+    }
+    Ok(())
 }
 
 fn quote_identifier(value: &str) -> String {
@@ -1270,46 +1370,31 @@ fn normalize_rollout_paths(
 
 fn ensure_local_rollout_path(codex_home: &Path, raw_path: &str) -> Result<Option<PathBuf>, String> {
     let raw = PathBuf::from(raw_path);
-    if raw.exists() && is_under(&raw, codex_home) {
+    if raw.exists() && is_under(&raw, codex_home) && is_rollout_jsonl_path(&raw) {
         return Ok(None);
     }
     if let Some(found) = resolve_local_rollout_path(codex_home, raw_path) {
         return Ok(Some(found));
     }
-    if !raw.exists() {
-        return Ok(None);
-    }
-    let Some(filename) = raw.file_name() else {
-        return Ok(None);
-    };
-    let dest_dir = if raw
-        .components()
-        .any(|component| component.as_os_str() == ARCHIVED_SESSIONS_DIR)
-    {
-        codex_home.join(ARCHIVED_SESSIONS_DIR)
-    } else {
-        codex_home.join(SESSIONS_DIR)
-    };
-    fs::create_dir_all(&dest_dir)
-        .map_err(|error| format!("create local rollout directory failed: {}", error))?;
-    let dest = dest_dir.join(filename);
-    fs::copy(&raw, &dest).map_err(|error| {
-        format!(
-            "copy rollout file failed ({} -> {}): {}",
-            raw.display(),
-            dest.display(),
-            error
-        )
-    })?;
-    Ok(Some(dest))
+    Ok(None)
+}
+
+fn is_rollout_jsonl_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("jsonl"))
+        .unwrap_or(false)
 }
 
 fn resolve_local_rollout_path(codex_home: &Path, raw_path: &str) -> Option<PathBuf> {
     let raw = PathBuf::from(raw_path);
-    if raw.exists() && is_under(&raw, codex_home) {
+    if raw.exists() && is_under(&raw, codex_home) && is_rollout_jsonl_path(&raw) {
         return None;
     }
     let filename = raw.file_name()?;
+    if !is_rollout_jsonl_path(Path::new(filename)) {
+        return None;
+    }
     let mut found = Vec::new();
     find_file_by_name(&codex_home.join(SESSIONS_DIR), filename, &mut found);
     if found.is_empty() {
@@ -1999,7 +2084,7 @@ model = "gpt-4.1"
     }
 
     #[test]
-    fn external_archived_rollout_path_is_copied_and_normalized() {
+    fn external_archived_rollout_path_is_left_missing() {
         let home = TempCodexHome::new();
         let external = TempExternalRoot::new();
         let source = external.archived_session_path("rollout-archived.jsonl");
@@ -2015,16 +2100,12 @@ model = "gpt-4.1"
 
         let updated = normalize_rollout_paths(&home.path, &conn, &columns).unwrap();
 
-        assert_eq!(updated, 1);
+        assert_eq!(updated, 0);
         let dest = home
             .path
             .join(ARCHIVED_SESSIONS_DIR)
             .join("rollout-archived.jsonl");
-        assert!(dest.exists());
-        assert_eq!(
-            fs::read_to_string(&dest).unwrap(),
-            fs::read_to_string(&source).unwrap()
-        );
+        assert!(!dest.exists());
         let stored: String = conn
             .query_row(
                 "SELECT rollout_path FROM threads WHERE id=?1",
@@ -2032,10 +2113,47 @@ model = "gpt-4.1"
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(stored, dest.to_string_lossy());
+        assert_eq!(stored, source.to_string_lossy());
         assert_eq!(
             count_missing_session_files(&home.path, &conn, &columns).unwrap(),
-            0
+            1
+        );
+    }
+
+    #[test]
+    fn malicious_rollout_path_does_not_copy_non_session_file() {
+        let home = TempCodexHome::new();
+        let external = TempExternalRoot::new();
+        let secret = external.path.join("auth.json");
+        fs::write(
+            &secret,
+            r#"{"OPENAI_API_KEY":"sk-malicious-copy-000000000000"}"#,
+        )
+        .unwrap();
+        home.insert_thread("thread-secret", "Secret Thread", &secret);
+        let conn = Connection::open(home.path.join(DB_FILE)).unwrap();
+        let columns = thread_columns(&conn).unwrap();
+
+        let updated = normalize_rollout_paths(&home.path, &conn, &columns).unwrap();
+
+        assert_eq!(updated, 0);
+        assert!(!home.path.join(SESSIONS_DIR).join("auth.json").exists());
+        assert!(!home
+            .path
+            .join(ARCHIVED_SESSIONS_DIR)
+            .join("auth.json")
+            .exists());
+        let stored: String = conn
+            .query_row(
+                "SELECT rollout_path FROM threads WHERE id=?1",
+                params!["thread-secret"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, secret.to_string_lossy());
+        assert_eq!(
+            count_missing_session_files(&home.path, &conn, &columns).unwrap(),
+            1
         );
     }
 
@@ -2077,6 +2195,119 @@ model = "gpt-4.1"
             .unwrap();
         assert!(Path::new(&rollout_path).starts_with(&clone.path));
         assert!(Path::new(&rollout_path).exists());
+    }
+
+    #[test]
+    fn shared_sync_refreshes_newer_default_threads_and_related_rows() {
+        let default_home = TempCodexHome::new_default_source();
+        let default_session = default_home.session_path("rollout-source-newer.jsonl");
+        write_session_with_id(&default_session, "thread-shared", "openai", "gpt-4.1");
+        default_home.insert_thread("thread-shared", "Default Newer Thread", &default_session);
+
+        let clone = TempCodexHome::new();
+        let clone_session = clone.session_path("rollout-clone-old.jsonl");
+        write_session_with_id(
+            &clone_session,
+            "thread-shared",
+            "codex_local_access",
+            "gpt-5.5",
+        );
+        clone.insert_thread("thread-shared", "Clone Old Thread", &clone_session);
+
+        for home in [&default_home, &clone] {
+            let conn = Connection::open(home.path.join(DB_FILE)).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE thread_dynamic_tools (
+                    thread_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    input_schema TEXT NOT NULL,
+                    defer_loading INTEGER NOT NULL DEFAULT 0,
+                    namespace TEXT,
+                    PRIMARY KEY (thread_id, position)
+                );
+                CREATE TABLE thread_spawn_edges (
+                    parent_thread_id TEXT NOT NULL,
+                    child_thread_id TEXT NOT NULL PRIMARY KEY,
+                    status TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        }
+
+        let source_conn = Connection::open(default_home.path.join(DB_FILE)).unwrap();
+        source_conn
+            .execute(
+                "UPDATE threads SET title=?1, updated_at=?2 WHERE id=?3",
+                params!["Default Newer Thread", 1_800_000_000_i64, "thread-shared"],
+            )
+            .unwrap();
+        source_conn
+            .execute(
+                "INSERT INTO thread_dynamic_tools (thread_id, position, name, description, input_schema, defer_loading, namespace) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params!["thread-shared", 0_i64, "source_tool", "source desc", "{}", 0_i64, "source_ns"],
+            )
+            .unwrap();
+        source_conn
+            .execute(
+                "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?1, ?2, ?3)",
+                params!["thread-shared", "child-thread", "completed"],
+            )
+            .unwrap();
+
+        let conn = Connection::open(clone.path.join(DB_FILE)).unwrap();
+        conn.execute(
+            "UPDATE threads SET updated_at=?1 WHERE id=?2",
+            params![1_700_000_000_i64, "thread-shared"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO thread_dynamic_tools (thread_id, position, name, description, input_schema, defer_loading, namespace) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params!["thread-shared", 0_i64, "clone_stale_tool", "clone desc", "{}", 0_i64, "clone_ns"],
+        )
+        .unwrap();
+        let columns = thread_columns(&conn).unwrap();
+        let mut warnings = Vec::new();
+
+        let synced = sync_threads_from_source(
+            &clone.path,
+            &default_home.path,
+            &conn,
+            &columns,
+            false,
+            &mut warnings,
+        )
+        .unwrap();
+
+        assert_eq!(synced, 1);
+        assert!(warnings.is_empty());
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM threads WHERE id=?1",
+                params!["thread-shared"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Default Newer Thread");
+        let tool_name: String = conn
+            .query_row(
+                "SELECT name FROM thread_dynamic_tools WHERE thread_id=?1 AND position=0",
+                params!["thread-shared"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tool_name, "source_tool");
+        let edge_status: String = conn
+            .query_row(
+                "SELECT status FROM thread_spawn_edges WHERE child_thread_id=?1",
+                params!["child-thread"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_status, "completed");
     }
 
     #[test]

@@ -242,7 +242,16 @@ fn parse_callback_url(callback_url: &str, port: u16) -> Result<Url, String> {
     }
 
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return Url::parse(trimmed).map_err(|e| format!("回调链接格式无效: {}", e));
+        let parsed = Url::parse(trimmed).map_err(|e| format!("回调链接格式无效: {}", e))?;
+        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+        let is_loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]");
+        if !is_loopback {
+            return Err("回调链接主机无效，必须是 localhost/127.0.0.1/[::1]".to_string());
+        }
+        if parsed.port_or_known_default() != Some(port) {
+            return Err("回调链接端口不匹配当前登录会话".to_string());
+        }
+        return Ok(parsed);
     }
 
     if trimmed.starts_with('/') {
@@ -436,8 +445,11 @@ async fn start_callback_server(
 
                 if state != expected_state {
                     logger::log_warn(&format!(
-                        "Codex OAuth 回调 state 不匹配: login_id={}, expected_state={}, actual_state={}",
-                        expected_login_id, expected_state, state
+                        "Codex OAuth 回调 state 不匹配: login_id={}, expected_state_len={}, actual_state_len={}, actual_state_present={}",
+                        expected_login_id,
+                        expected_state.len(),
+                        state.len(),
+                        !state.is_empty()
                     ));
                     let response = Response::from_string("State mismatch").with_status_code(400);
                     let _ = request.respond(response);
@@ -492,7 +504,7 @@ async fn start_callback_server(
                             && state_data.login_id == expected_login_id
                         {
                             state_data.code = Some(code.clone());
-                            persist_state_to_disk(Some(state_data));
+                            persist_state_to_disk(None);
                             Some(state_data.login_id.clone())
                         } else {
                             None
@@ -920,4 +932,51 @@ pub async fn refresh_access_token_with_fallback(
         access_token,
         refresh_token: new_refresh_token,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_callback_url;
+
+    #[test]
+    fn parse_callback_url_accepts_relative_callback() {
+        let parsed = parse_callback_url("/auth/callback?code=abc&state=xyz", 1455)
+            .expect("relative callback should be accepted");
+
+        assert_eq!(parsed.scheme(), "http");
+        assert_eq!(parsed.host_str(), Some("localhost"));
+        assert_eq!(parsed.port(), Some(1455));
+        assert_eq!(parsed.path(), "/auth/callback");
+    }
+
+    #[test]
+    fn parse_callback_url_accepts_loopback_full_url_on_expected_port() {
+        let parsed = parse_callback_url(
+            "http://127.0.0.1:1455/auth/callback?code=abc&state=xyz",
+            1455,
+        )
+        .expect("loopback callback should be accepted");
+
+        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+        assert_eq!(parsed.port(), Some(1455));
+    }
+
+    #[test]
+    fn parse_callback_url_rejects_non_loopback_full_url() {
+        let err = parse_callback_url("https://example.com/auth/callback?code=abc&state=xyz", 1455)
+            .expect_err("non-loopback callback should be rejected");
+
+        assert!(err.contains("localhost") || err.contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn parse_callback_url_rejects_wrong_loopback_port() {
+        let err = parse_callback_url(
+            "http://localhost:9999/auth/callback?code=abc&state=xyz",
+            1455,
+        )
+        .expect_err("wrong callback port should be rejected");
+
+        assert!(err.contains("端口"));
+    }
 }

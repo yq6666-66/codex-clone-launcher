@@ -271,8 +271,10 @@ mod tests {
 
     impl TempDir {
         fn new() -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("codex-clone-app-server-test-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!(
+                "codex-clone-app-server-test-{}",
+                uuid::Uuid::new_v4()
+            ));
             fs::create_dir_all(&path).unwrap();
             Self { path }
         }

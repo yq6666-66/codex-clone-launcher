@@ -2,6 +2,7 @@ pub mod account;
 pub mod account_index_repair;
 pub mod atomic_write;
 pub mod codex_account;
+pub mod codex_chat_bridge;
 pub mod codex_history_sync;
 pub mod codex_instance;
 pub mod codex_oauth;

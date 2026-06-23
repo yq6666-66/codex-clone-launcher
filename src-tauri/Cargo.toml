@@ -1,6 +1,6 @@
 [package]
 name = "codex-clone-launcher"
-version = "0.24.12"
+version = "0.24.13"
 description = "Codex Clone Launcher"
 authors = ["jlcodes"]
 license = "MIT"
@@ -8,7 +8,7 @@ edition = "2021"
 
 [lib]
 name = "codex_clone_launcher_lib"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -29,7 +29,7 @@ toml_edit = "0.20"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = "0.4"
 dirs = "5.0"
-reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate", "zstd", "stream", "socks"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate", "zstd", "stream", "socks", "blocking"] }
 # 为 tauri-plugin-updater 所依赖的 reqwest 0.13 合并 socks 特性，
 # 使 updater 链路在全局代理配置为 socks5:// 时可正常发起请求。
 reqwest_updater_socks = { package = "reqwest", version = "0.13", default-features = false, features = ["socks"] }
@@ -41,13 +41,9 @@ rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 base64 = "0.22"
 minisign-verify = "0.2"
 tokio = { version = "1", features = ["full"] }
-tokio-rustls = "0.26"
-rustls = "0.23"
-rcgen = "0.13"
 thiserror = "2"
 anyhow = "1.0"
 sha2 = "0.10"
-rsa = "0.9"
 serde_urlencoded = "0.7"
 url = "2.5"
 regex = "1"

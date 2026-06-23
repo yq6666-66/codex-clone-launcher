@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -754,7 +754,7 @@ fn write_clone_model_config(
             doc["windows"] = toml_edit::table();
         }
         if let Some(windows_table) = doc["windows"].as_table_mut() {
-            windows_table["sandbox"] = value("unelevated");
+            windows_table["sandbox"] = value("elevated");
         }
     }
     let content = doc.to_string();
@@ -1607,15 +1607,15 @@ pub async fn codex_test_provider_connection(
             let responses_summary = provider_attempt_summary(&responses_attempt);
             return Ok(CodexProviderConnectionTestResult {
                 ok: true,
-                codex_ready: false,
-                status: "chatOnly".to_string(),
+                codex_ready: true,
+                status: "chatBridge".to_string(),
                 protocol: "chat_completions".to_string(),
                 endpoint: chat_attempt.endpoint,
                 http_status: chat_attempt.http_status,
                 latency_ms: chat_attempt.latency_ms,
                 ttfb_ms: chat_attempt.ttfb_ms,
                 message: format!(
-                    "Chat Completions 端点可用，但 Responses 探测失败（{}）。当前分身直连 Codex 使用 Responses wire_api，请改用 Responses 兼容端点或中转/代理。",
+                    "Chat Completions 端点可用；Responses 探测失败（{}）。分身会启用本地 Chat->Responses 桥接，用于 Gemini/Claude 等 Chat-only provider。",
                     responses_summary
                 ),
                 response_preview: chat_attempt.body_preview,
@@ -1776,6 +1776,12 @@ pub async fn codex_create_clone_and_launch(
         modules::codex_sync_package::apply_sync_package_to_home(Path::new(
             &instance.user_data_dir,
         ))?;
+        modules::codex_instance::ensure_instance_shared_resources(Path::new(
+            &instance.user_data_dir,
+        ))?;
+        modules::codex_instance::ensure_instance_featured_remote_plugins(Path::new(
+            &instance.user_data_dir,
+        ))?;
     }
     if let Some(ref account_id) = instance.bind_account_id {
         modules::codex_instance::inject_account_to_profile(
@@ -1790,6 +1796,9 @@ pub async fn codex_create_clone_and_launch(
         input.model_catalog_enabled.unwrap_or(false),
         input.model_catalog_models.as_deref(),
     )?;
+    modules::codex_instance::ensure_instance_featured_remote_plugins(Path::new(
+        &instance.user_data_dir,
+    ))?;
     write_clone_goal_to_profile(Path::new(&instance.user_data_dir), clone_goal.as_deref())?;
     write_clone_prompt_pack_to_profile(
         Path::new(&instance.user_data_dir),
@@ -1917,6 +1926,79 @@ fn codex_home_for_instance(instance_id: &str) -> Result<String, String> {
         .ok_or_else(|| "instance not found".to_string())
 }
 
+fn canonicalize_existing_or_parent(path: &Path) -> Result<PathBuf, String> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(
+            "managed instance path must not contain parent directory components".to_string(),
+        );
+    }
+
+    let mut missing_components = Vec::new();
+    let mut cursor = path;
+    loop {
+        if cursor.exists() {
+            let mut resolved = fs::canonicalize(cursor).map_err(|error| {
+                format!(
+                    "resolve managed instance path failed ({}): {}",
+                    cursor.display(),
+                    error
+                )
+            })?;
+            for component in missing_components.iter().rev() {
+                resolved.push(component);
+            }
+            return Ok(resolved);
+        }
+
+        let Some(name) = cursor.file_name() else {
+            return Err(format!(
+                "managed instance path has no existing ancestor: {}",
+                path.display()
+            ));
+        };
+        missing_components.push(name.to_os_string());
+        cursor = cursor.parent().ok_or_else(|| {
+            format!(
+                "managed instance path has no existing parent: {}",
+                path.display()
+            )
+        })?;
+    }
+}
+
+fn path_resolves_within_root(path: &Path, root: &Path) -> Result<bool, String> {
+    if !path.is_absolute() {
+        return Ok(false);
+    }
+    fs::create_dir_all(root)
+        .map_err(|error| format!("create managed instance root failed: {}", error))?;
+    let resolved_root = fs::canonicalize(root).map_err(|error| {
+        format!(
+            "resolve managed instance root failed ({}): {}",
+            root.display(),
+            error
+        )
+    })?;
+    let resolved_path = canonicalize_existing_or_parent(path)?;
+    Ok(resolved_path == resolved_root || resolved_path.starts_with(&resolved_root))
+}
+
+fn ensure_managed_instance_home_path(codex_home: &str) -> Result<(), String> {
+    let root = modules::codex_instance::get_default_instances_root_dir()?;
+    let path = Path::new(codex_home.trim());
+    if path_resolves_within_root(path, &root)? {
+        return Ok(());
+    }
+    Err(format!(
+        "managed instance path is outside the launcher instance root: path={}, root={}",
+        path.display(),
+        root.display()
+    ))
+}
+
 fn codex_home_and_bind_for_instance(instance_id: &str) -> Result<(String, Option<String>), String> {
     if instance_id == DEFAULT_INSTANCE_ID {
         return Ok((
@@ -1942,6 +2024,8 @@ fn ensure_managed_instance_write_target(instance_id: &str) -> Result<(), String>
                 .to_string(),
         );
     }
+    let codex_home = codex_home_for_instance(instance_id)?;
+    ensure_managed_instance_home_path(&codex_home)?;
     Ok(())
 }
 
@@ -1981,6 +2065,22 @@ pub async fn codex_history_sync(
         let apply_result =
             modules::codex_sync_package::apply_sync_package_to_home(Path::new(&codex_home))?;
         apply_warnings = apply_result.warnings;
+        if let Err(error) =
+            modules::codex_instance::ensure_instance_shared_resources(Path::new(&codex_home))
+        {
+            apply_warnings.push(format!(
+                "shared resources could not be restored after history sync package apply: {}",
+                error
+            ));
+        }
+        if let Err(error) =
+            modules::codex_instance::ensure_instance_featured_remote_plugins(Path::new(&codex_home))
+        {
+            apply_warnings.push(format!(
+                "featured remote plugin config could not be restored after history sync package apply: {}",
+                error
+            ));
+        }
         if let Some(ref account_id) = bind_account_id {
             modules::codex_instance::inject_account_to_profile(Path::new(&codex_home), account_id)
                 .await?;
@@ -2008,8 +2108,24 @@ pub async fn codex_history_repair(
 ) -> Result<modules::codex_history_sync::CodexHistorySyncResult, String> {
     ensure_managed_instance_write_target(&instance_id)?;
     let (codex_home, bind_account_id) = codex_home_and_bind_for_instance(&instance_id)?;
-    let apply_result =
+    let mut apply_result =
         modules::codex_sync_package::apply_sync_package_to_home(Path::new(&codex_home))?;
+    if let Err(error) =
+        modules::codex_instance::ensure_instance_shared_resources(Path::new(&codex_home))
+    {
+        apply_result.warnings.push(format!(
+            "shared resources could not be restored after history repair package apply: {}",
+            error
+        ));
+    }
+    if let Err(error) =
+        modules::codex_instance::ensure_instance_featured_remote_plugins(Path::new(&codex_home))
+    {
+        apply_result.warnings.push(format!(
+            "featured remote plugin config could not be restored after history repair package apply: {}",
+            error
+        ));
+    }
     if let Some(ref account_id) = bind_account_id {
         modules::codex_instance::inject_account_to_profile(Path::new(&codex_home), account_id)
             .await?;
@@ -2892,7 +3008,25 @@ pub async fn codex_apply_sync_package_to_instance(
 ) -> Result<modules::codex_sync_package::CodexSyncPackageApplyResult, String> {
     ensure_managed_instance_write_target(&instance_id)?;
     let codex_home = codex_home_for_instance(&instance_id)?;
-    modules::codex_sync_package::apply_sync_package_to_home(Path::new(&codex_home))
+    let mut result =
+        modules::codex_sync_package::apply_sync_package_to_home(Path::new(&codex_home))?;
+    if let Err(error) =
+        modules::codex_instance::ensure_instance_shared_resources(Path::new(&codex_home))
+    {
+        result.warnings.push(format!(
+            "shared resources could not be restored after sync package apply: {}",
+            error
+        ));
+    }
+    if let Err(error) =
+        modules::codex_instance::ensure_instance_featured_remote_plugins(Path::new(&codex_home))
+    {
+        result.warnings.push(format!(
+            "featured remote plugin config could not be restored after sync package apply: {}",
+            error
+        ));
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2907,6 +3041,7 @@ pub async fn codex_start_instance(instance_id: String) -> Result<CodexInstancePr
         .into_iter()
         .find(|item| item.id == instance_id)
         .ok_or_else(|| "instance not found".to_string())?;
+    ensure_managed_instance_home_path(&instance.user_data_dir)?;
 
     if let Some(pid) =
         modules::process::resolve_codex_pid(instance.last_pid, Some(&instance.user_data_dir))
@@ -2923,6 +3058,11 @@ pub async fn codex_start_instance(instance_id: String) -> Result<CodexInstancePr
         .await?;
     }
 
+    modules::codex_instance::ensure_instance_shared_resources(Path::new(&instance.user_data_dir))?;
+    modules::codex_instance::ensure_instance_featured_remote_plugins(Path::new(
+        &instance.user_data_dir,
+    ))?;
+    let _ = modules::codex_chat_bridge::ensure_started(Path::new(&instance.user_data_dir))?;
     modules::process::ensure_codex_launch_path_configured()?;
     let launch_script_path = modules::codex_instance::prepare_instance_launch_script(&instance)?;
     let mut extra_env: Vec<(String, String)> = Vec::new();
@@ -2998,6 +3138,29 @@ mod tests {
     }
 
     #[test]
+    fn managed_instance_path_must_resolve_inside_instance_root() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-managed-instance-root-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "codex-managed-instance-outside-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("create root");
+        fs::create_dir_all(&outside).expect("create outside");
+
+        assert!(
+            path_resolves_within_root(&root.join("clone-a"), &root).expect("validate child path")
+        );
+        assert!(!path_resolves_within_root(&outside, &root).expect("validate outside path"));
+        assert!(path_resolves_within_root(&root.join("..").join("escape"), &root).is_err());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
     fn clone_model_catalog_writes_codex_catalog_json_and_config() {
         let root = std::env::temp_dir().join(format!(
             "codex-clone-model-catalog-test-{}",
@@ -3039,6 +3202,10 @@ mod tests {
         assert_eq!(slugs, vec!["gpt-5", "gpt-5-mini"]);
         assert!(catalog.contains("\"supported_in_api\": true"));
         assert!(!catalog.contains("api_key"));
+        #[cfg(target_os = "windows")]
+        assert!(config.contains("sandbox = \"elevated\""));
+        #[cfg(target_os = "windows")]
+        assert!(!config.contains("sandbox = \"unelevated\""));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -3383,8 +3550,9 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "List Title");
         assert_eq!(sessions[0].message_count, 2);
-        let expected_last_message_at =
-            format_export_timestamp(Some(&json!("2026-06-03T12:00:02Z")));
+        let expected_last_message_at = format_export_timestamp(Some(&serde_json::Value::String(
+            "2026-06-03T12:00:02Z".to_string(),
+        )));
         assert_eq!(
             sessions[0].last_message_at.as_deref(),
             expected_last_message_at.as_deref()
@@ -3579,5 +3747,6 @@ pub async fn codex_delete_instance(instance_id: String) -> Result<(), String> {
     if instance_id == DEFAULT_INSTANCE_ID {
         return Err("default Codex instance cannot be deleted".to_string());
     }
+    ensure_managed_instance_write_target(&instance_id)?;
     modules::codex_instance::delete_instance(&instance_id)
 }

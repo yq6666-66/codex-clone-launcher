@@ -23,9 +23,14 @@ pub struct DiagnosticsSnapshot {
     pub log_dir: String,
     pub latest_log_file: Option<String>,
     pub latest_log_tail: String,
+    pub startup_log_file: Option<String>,
+    pub startup_log_tail: String,
+    pub startup_mutex_name: String,
     pub log_files: Vec<LogFileView>,
     pub codex_app_path: String,
     pub codex_app_path_exists: bool,
+    pub codex_launch_path: Option<String>,
+    pub codex_launch_path_source: String,
     pub launcher_pid: u32,
 }
 
@@ -74,7 +79,10 @@ pub fn set_app_path(app: String, path: String) -> Result<(), String> {
     let normalized_path = path.trim().to_string();
 
     match app.as_str() {
-        "codex" => current.codex_app_path = normalized_path,
+        "codex" => {
+            process::validate_codex_desktop_app_path(&normalized_path)?;
+            current.codex_app_path = normalized_path;
+        }
         _ => return Err("仅支持 Codex 启动路径".to_string()),
     }
 
@@ -204,6 +212,13 @@ pub fn get_diagnostics_snapshot(line_limit: Option<usize>) -> Result<Diagnostics
         Some(path) => logger::read_log_tail_lines(path, logger::clamp_log_tail_lines(line_limit))?,
         None => String::new(),
     };
+    let startup_log_file = find_startup_log_file();
+    let startup_log_tail = match startup_log_file.as_deref() {
+        Some(path) => logger::read_log_tail_lines(path, logger::clamp_log_tail_lines(line_limit))?,
+        None => String::new(),
+    };
+    let (codex_launch_path, codex_launch_path_source) =
+        process::codex_desktop_launch_path_diagnostics();
 
     Ok(DiagnosticsSnapshot {
         log_dir: log_dir.to_string_lossy().to_string(),
@@ -211,14 +226,37 @@ pub fn get_diagnostics_snapshot(line_limit: Option<usize>) -> Result<Diagnostics
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
         latest_log_tail,
+        startup_log_file: startup_log_file
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        startup_log_tail,
+        startup_mutex_name: "Global\\CodexCloneLauncherStartup".to_string(),
         log_files: log_files
             .into_iter()
             .map(log_file_view)
             .collect::<Result<Vec<_>, String>>()?,
         codex_app_path_exists: !current.codex_app_path.trim().is_empty()
-            && PathBuf::from(&current.codex_app_path).exists(),
+            && PathBuf::from(&current.codex_app_path).is_file(),
+        codex_launch_path,
+        codex_launch_path_source,
         codex_app_path: current.codex_app_path,
         launcher_pid: std::process::id(),
+    })
+}
+
+fn find_startup_log_file() -> Option<PathBuf> {
+    let current_dir = std::env::current_dir().ok()?;
+    let candidates = [
+        current_dir.join("codex-clone-launcher.log"),
+        current_dir
+            .parent()
+            .map(|parent| parent.join("codex-clone-launcher.log"))
+            .unwrap_or_else(|| current_dir.join("codex-clone-launcher.log")),
+    ];
+    candidates.into_iter().find(|path| {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
     })
 }
 

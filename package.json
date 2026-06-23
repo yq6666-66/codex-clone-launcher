@@ -2,7 +2,7 @@
   "name": "codex-clone-launcher",
   "private": false,
   "description": "Tauri desktop launcher for isolated Codex Desktop clones with explicit sync-package repair.",
-  "version": "0.24.12",
+  "version": "0.24.13",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -26,8 +26,12 @@
     "typecheck": "tsc --noEmit",
     "prebuild": "npm run typecheck",
     "build": "npm run sync-version && tsc && vite build",
-    "verify": "npm run typecheck && npm run build && npm run test:rust",
+    "verify": "npm run typecheck && npm run build && npm run test:rust && npm run verify:ui-regression && npm run verify:ui-workflows && npm run verify:release-workflow && npm run verify:windows-shortcut",
+    "verify:ui-regression": "node scripts/verify-ui-regression.cjs",
+    "verify:ui-workflows": "node scripts/verify-ui-workflows.cjs",
+    "verify:windows-shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-windows-shortcut.ps1",
     "verify:updater-release": "node scripts/verify-updater-release.cjs",
+    "verify:release-workflow": "node scripts/verify-release-workflow.cjs",
     "test:rust": "node scripts/cargo-test-workspace.cjs",
     "preview": "vite preview",
     "pretauri:dev": "npm run typecheck",
@@ -59,12 +63,13 @@
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
+    "@vitejs/plugin-react": "^6.0.2",
     "autoprefixer": "^10.4.23",
+    "playwright": "^1.61.0",
     "postcss": "^8.5.15",
     "tailwindcss": "^3.4.19",
     "typescript": "~5.8.3",
-    "vite": "^7.3.3"
+    "vite": "^8.0.16"
   },
   "overrides": {
     "picomatch": "4.0.4",

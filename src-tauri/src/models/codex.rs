@@ -133,6 +133,27 @@ pub struct CodexAccount {
     pub last_used: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CodexAccountView {
+    pub id: String,
+    pub email: String,
+    pub auth_mode: CodexAuthMode,
+    pub has_openai_api_key: bool,
+    pub account_name: Option<String>,
+}
+
+impl From<&CodexAccount> for CodexAccountView {
+    fn from(account: &CodexAccount) -> Self {
+        Self {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            auth_mode: account.auth_mode.clone(),
+            has_openai_api_key: account.openai_api_key.is_some(),
+            account_name: account.account_name.clone(),
+        }
+    }
+}
+
 /// Codex Token 数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexTokens {
@@ -357,5 +378,36 @@ impl CodexAccount {
 
     pub fn update_last_used(&mut self) {
         self.last_used = chrono::Utc::now().timestamp();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_account_view_serializes_without_secret_material() {
+        let mut account = CodexAccount::new(
+            "account-id".to_string(),
+            "user@example.com".to_string(),
+            CodexTokens {
+                id_token: "id-token-secret".to_string(),
+                access_token: "access-token-secret".to_string(),
+                refresh_token: Some("refresh-token-secret".to_string()),
+            },
+        );
+        account.openai_api_key = Some("sk-secret".to_string());
+        account.account_name = Some("Workspace".to_string());
+
+        let serialized = serde_json::to_string(&CodexAccountView::from(&account))
+            .expect("serialize account view");
+
+        assert!(serialized.contains("has_openai_api_key"));
+        assert!(!serialized.contains("sk-secret"));
+        assert!(!serialized.contains("id-token-secret"));
+        assert!(!serialized.contains("access-token-secret"));
+        assert!(!serialized.contains("refresh-token-secret"));
+        assert!(!serialized.contains("tokens"));
+        assert!(!serialized.contains("\"openai_api_key\""));
     }
 }

@@ -10,6 +10,8 @@ use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -951,6 +953,13 @@ fn write_api_key_provider_to_config_toml(
         .base_url
         .as_deref()
         .unwrap_or(CODEX_DEFAULT_OPENAI_BASE_URL);
+    let effective_base_url =
+        if crate::modules::codex_chat_bridge::should_bridge_api_base_url(base_url) {
+            crate::modules::codex_chat_bridge::write_bridge_config(base_dir, base_url)?
+        } else {
+            crate::modules::codex_chat_bridge::remove_bridge_config(base_dir)?;
+            base_url.to_string()
+        };
     let provider_name = provider_config
         .provider_name
         .as_deref()
@@ -977,7 +986,7 @@ fn write_api_key_provider_to_config_toml(
         .as_table_mut()
         .ok_or("config.toml 中目标 provider 不是合法表结构")?;
     provider_table["name"] = value(provider_name);
-    provider_table["base_url"] = value(base_url);
+    provider_table["base_url"] = value(effective_base_url);
     provider_table["wire_api"] = value(CODEX_PROVIDER_WIRE_API);
     provider_table["requires_openai_auth"] = value(false);
     provider_table[CODEX_CONFIG_EXPERIMENTAL_BEARER_TOKEN_KEY] = value(bearer_token);
@@ -998,6 +1007,43 @@ fn get_old_codex_data_dir() -> PathBuf {
         .join("com.codex-clone-launcher.legacy")
 }
 
+fn is_legacy_migration_linked_source(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_regular_legacy_migration_source(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if is_legacy_migration_linked_source(&metadata) => {
+            logger::log_warn(&format!(
+                "[Codex Migration] 跳过链接或 reparse point 源文件: {}",
+                path.display()
+            ));
+            false
+        }
+        Ok(metadata) => metadata.is_file(),
+        Err(error) => {
+            logger::log_warn(&format!(
+                "[Codex Migration] 读取源文件元数据失败: {}, error={}",
+                path.display(),
+                error
+            ));
+            false
+        }
+    }
+}
+
 /// 将旧目录中的 codex 数据迁移到新目录（一次性，迁移成功后删除旧文件）
 fn migrate_codex_data_if_needed(new_data_dir: &PathBuf) {
     let old_dir = get_old_codex_data_dir();
@@ -1008,7 +1054,7 @@ fn migrate_codex_data_if_needed(new_data_dir: &PathBuf) {
     // 迁移 codex_accounts.json
     let old_index = old_dir.join("codex_accounts.json");
     let new_index = new_data_dir.join("codex_accounts.json");
-    if old_index.exists() && !new_index.exists() {
+    if old_index.exists() && !new_index.exists() && is_regular_legacy_migration_source(&old_index) {
         match fs::copy(&old_index, &new_index) {
             Ok(_) => {
                 logger::log_info("[Codex Migration] codex_accounts.json 迁移成功，清理旧文件");
@@ -1030,7 +1076,7 @@ fn migrate_codex_data_if_needed(new_data_dir: &PathBuf) {
         if let Ok(entries) = fs::read_dir(&old_accounts_dir) {
             for entry in entries.flatten() {
                 let old_path = entry.path();
-                if !old_path.is_file() {
+                if !is_regular_legacy_migration_source(&old_path) {
                     continue;
                 }
                 if let Some(fname) = old_path.file_name() {
@@ -1089,6 +1135,35 @@ fn get_accounts_dir() -> PathBuf {
     let accounts_dir = data_dir.join("codex_accounts");
     fs::create_dir_all(&accounts_dir).ok();
     accounts_dir
+}
+
+fn account_file_path(account_id: &str) -> Result<PathBuf, String> {
+    validate_account_id_path_segment(account_id)?;
+    Ok(get_accounts_dir().join(format!("{}.json", account_id)))
+}
+
+fn validate_account_id_path_segment(account_id: &str) -> Result<(), String> {
+    let trimmed = account_id.trim();
+    if trimmed.is_empty() || trimmed != account_id {
+        return Err("账号 id 不是有效的文件名段".to_string());
+    }
+    if account_id.chars().any(|ch| {
+        ch.is_control() || matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+    }) {
+        return Err("账号 id 不是有效的文件名段".to_string());
+    }
+    let path = Path::new(account_id);
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(name)), None)
+            if name.to_str().is_some_and(|value| value == account_id)
+                && account_id != "."
+                && account_id != ".." =>
+        {
+            Ok(())
+        }
+        _ => Err("账号 id 不是有效的文件名段".to_string()),
+    }
 }
 
 /// 解析 JWT Token 的 payload
@@ -1942,7 +2017,7 @@ fn load_account_with_summary(
     account_id: &str,
     summary: Option<&CodexAccountSummary>,
 ) -> Result<Option<CodexAccount>, String> {
-    let path = get_accounts_dir().join(format!("{}.json", account_id));
+    let path = account_file_path(account_id)?;
     if !path.exists() {
         return Ok(None);
     }
@@ -1970,7 +2045,7 @@ fn load_account_with_summary(
 
 /// 保存单个账号详情
 pub fn save_account(account: &CodexAccount) -> Result<(), String> {
-    let path = get_accounts_dir().join(format!("{}.json", &account.id));
+    let path = account_file_path(&account.id)?;
     let content =
         serde_json::to_string_pretty(account).map_err(|e| format!("序列化失败: {}", e))?;
     write_string_atomic(&path, &content).map_err(|e| format!("写入账号详情失败: {}", e))?;
@@ -1979,7 +2054,7 @@ pub fn save_account(account: &CodexAccount) -> Result<(), String> {
 
 /// 删除单个账号
 pub fn delete_account_file(account_id: &str) -> Result<(), String> {
-    let path = get_accounts_dir().join(format!("{}.json", account_id));
+    let path = account_file_path(account_id)?;
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("删除文件失败: {}", e))?;
     }
@@ -2785,8 +2860,9 @@ pub fn sync_managed_projection_from_auth_dir(
     account_id: &str,
     base_dir: &Path,
 ) -> Result<CodexAccount, String> {
-    let projection = read_managed_projection_from_dir(base_dir)
-        .ok_or_else(|| "目标目录不是 Codex Clone Launcher 受管 Codex 投影，已拒绝反向同步".to_string())?;
+    let projection = read_managed_projection_from_dir(base_dir).ok_or_else(|| {
+        "目标目录不是 Codex Clone Launcher 受管 Codex 投影，已拒绝反向同步".to_string()
+    })?;
     if projection.account_id != account_id {
         return Err(format!(
             "受管投影账号不匹配: expected={}, actual={}",
@@ -4712,7 +4788,7 @@ fn extract_codex_tokens_from_value(
 mod tests {
     use super::{
         build_account_storage_id, build_auth_file_value, decode_jwt_payload_value,
-        detect_auth_file_plan_type_from_path, ensure_managed_account_fresh,
+        delete_account_file, detect_auth_file_plan_type_from_path, ensure_managed_account_fresh,
         extract_codex_import_candidate_from_value, extract_codex_tokens_from_value,
         extract_user_info, format_refresh_error_for_user, get_accounts_dir,
         get_accounts_storage_path, get_current_account, is_managed_auth_refresh_due,
@@ -4932,6 +5008,49 @@ mod tests {
             access_token,
             refresh_token: Some(refresh_token.to_string()),
         }
+    }
+
+    #[test]
+    fn account_detail_file_access_rejects_path_segments() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = TestEnvGuard::new("codex-account-path-segment-test");
+        let tokens = make_codex_tokens(
+            "path@example.com",
+            "acc-path",
+            "org-path",
+            "path",
+            "refresh-path",
+        );
+        let account = CodexAccount::new(
+            "codex_safe_account".to_string(),
+            "path@example.com".to_string(),
+            tokens.clone(),
+        );
+        save_account(&account).expect("save safe account");
+        assert!(load_account("codex_safe_account").is_some());
+
+        let accounts_dir = get_accounts_dir();
+        let outside = accounts_dir
+            .parent()
+            .expect("accounts dir parent")
+            .join("outside.json");
+        let outside_content = serde_json::to_string(&account).expect("serialize outside account");
+        fs::write(&outside, &outside_content).expect("write outside account");
+
+        assert!(load_account("../outside").is_none());
+        assert!(delete_account_file("../outside").is_err());
+        assert!(outside.exists());
+
+        let invalid = CodexAccount::new(
+            "..\\outside".to_string(),
+            "path@example.com".to_string(),
+            tokens,
+        );
+        assert!(save_account(&invalid).is_err());
+        assert_eq!(
+            fs::read_to_string(&outside).expect("read outside account"),
+            outside_content
+        );
     }
 
     fn seed_oauth_account(tokens: CodexTokens) -> CodexAccount {
@@ -5863,7 +5982,11 @@ requires_openai_auth = false
         assert!(content.contains("[model_providers.codex_local_access]"));
         assert!(!content.contains("[model_providers.relay]"));
         assert!(content.contains("name = \"Relay\""));
-        assert!(content.contains("base_url = \"https://relay.example.com/v1\""));
+        let bridge_base_url = crate::modules::codex_chat_bridge::local_bridge_base_url(&base_dir);
+        assert!(content.contains(&format!("base_url = \"{}\"", bridge_base_url)));
+        let bridge_config =
+            fs::read_to_string(base_dir.join(".codex-chat-bridge.json")).expect("read bridge");
+        assert!(bridge_config.contains("\"upstreamBaseUrl\": \"https://relay.example.com/v1\""));
         assert!(content.contains("wire_api = \"responses\""));
         assert!(content.contains("requires_openai_auth = false"));
         assert!(content.contains("experimental_bearer_token = \"sk-test\""));
@@ -5873,7 +5996,7 @@ requires_openai_auth = false
             read_api_provider_from_config_toml(&base_dir),
             ApiProviderConfig {
                 mode: CodexApiProviderMode::Custom,
-                base_url: Some("https://relay.example.com/v1".to_string()),
+                base_url: Some(bridge_base_url),
                 provider_id: Some("codex_local_access".to_string()),
                 provider_name: Some("Relay".to_string()),
             }

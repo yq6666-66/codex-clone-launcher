@@ -46,6 +46,38 @@ const QUOTA_CONFIG_KEYS: &[&str] = &[
     "model_providers",
     "openai_base_url",
 ];
+const SECRET_CONFIG_KEY_FRAGMENTS: &[&str] = &[
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "credential",
+    "credentials",
+    "password",
+    "private_key",
+    "refresh_token",
+    "secret",
+    "token",
+];
+const SECRET_ARG_FRAGMENTS: &[&str] = &[
+    "api-key",
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "client-secret",
+    "client_secret",
+    "credential",
+    "credentials",
+    "password",
+    "private-key",
+    "private_key",
+    "refresh-token",
+    "refresh_token",
+    "secret",
+    "token",
+];
 const FRESHNESS_DIRECTORIES: &[&str] = &[
     "archived_sessions",
     "mcp-servers",
@@ -1575,7 +1607,15 @@ fn apply_sync_package_to_home_from_source(
     current_source_override: Option<&Path>,
 ) -> Result<CodexSyncPackageApplyResult, String> {
     let package = require_existing_sync_package_for_source(package_root, current_source_override)?;
-    let package_home = PathBuf::from(&package.package_path);
+    let package_home = package_codex_home_dir_for(package_root);
+    let manifest_package_home = PathBuf::from(&package.package_path);
+    if !paths_equal_or_same(&manifest_package_home, &package_home) {
+        return Err(format!(
+            "Codex sync package manifest path mismatch: manifest points to {}, expected {}",
+            manifest_package_home.display(),
+            package_home.display()
+        ));
+    }
     let mut result = apply_sync_package_from(&package_home, target_home)?;
     if package.stale {
         result.warnings.insert(
@@ -2079,6 +2119,7 @@ fn sha256_file(path: &Path) -> Result<(u64, String), String> {
 }
 
 fn copy_file_replace(source: &Path, target: &Path) -> Result<(u64, String), String> {
+    let _ = regular_source_file_metadata(source, "copy file")?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -2100,7 +2141,34 @@ fn copy_file_replace(source: &Path, target: &Path) -> Result<(u64, String), Stri
     sha256_file(target)
 }
 
+fn regular_source_file_metadata(source: &Path, operation: &str) -> Result<fs::Metadata, String> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| {
+        format!(
+            "{} source metadata failed ({}): {}",
+            operation,
+            source.display(),
+            error
+        )
+    })?;
+    if is_linked_path(source, &metadata) {
+        return Err(format!(
+            "refuse to {} from linked source path ({})",
+            operation,
+            source.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "refuse to {} from non-file source path ({})",
+            operation,
+            source.display()
+        ));
+    }
+    Ok(metadata)
+}
+
 fn copy_sqlite_snapshot_replace(source: &Path, target: &Path) -> Result<(u64, String), String> {
+    let _ = regular_source_file_metadata(source, "copy sqlite snapshot")?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -2156,13 +2224,7 @@ fn copy_directory_replace(source: &Path, target: &Path) -> Result<CopyStats, Str
 }
 
 fn copy_directory_merge(source: &Path, target: &Path) -> Result<CopyStats, String> {
-    fs::create_dir_all(target).map_err(|error| {
-        format!(
-            "create target directory failed ({}): {}",
-            target.display(),
-            error
-        )
-    })?;
+    prepare_merge_target_directory(target)?;
     let mut stats = CopyStats {
         directory_count: 1,
         ..CopyStats::default()
@@ -2178,13 +2240,22 @@ fn copy_directory_merge(source: &Path, target: &Path) -> Result<CopyStats, Strin
         let entry = entry.map_err(|error| format!("read source entry failed: {}", error))?;
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
-        let metadata = fs::metadata(&source_path).map_err(|error| {
+        let metadata = fs::symlink_metadata(&source_path).map_err(|error| {
             format!(
                 "read source metadata failed ({}): {}",
                 source_path.display(),
                 error
             )
         })?;
+        if is_linked_path(&source_path, &metadata) {
+            return Err(format!(
+                "refuse to copy linked source path ({})",
+                source_path.display()
+            ));
+        }
+        if metadata.is_file() && is_sensitive_sync_package_file(&source_path) {
+            continue;
+        }
         if metadata.is_dir() {
             stats.add(copy_directory_merge(&source_path, &target_path)?);
         } else if metadata.is_file() && is_sqlite_sidecar_file(&source_path) {
@@ -2201,6 +2272,21 @@ fn copy_directory_merge(source: &Path, target: &Path) -> Result<CopyStats, Strin
     }
 
     Ok(stats)
+}
+
+fn prepare_merge_target_directory(target: &Path) -> Result<(), String> {
+    if let Ok(metadata) = fs::symlink_metadata(target) {
+        if is_linked_path(target, &metadata) {
+            remove_existing_path(target)?;
+        }
+    }
+    fs::create_dir_all(target).map_err(|error| {
+        format!(
+            "create target directory failed ({}): {}",
+            target.display(),
+            error
+        )
+    })
 }
 
 fn remove_existing_path(path: &Path) -> Result<(), String> {
@@ -2263,6 +2349,26 @@ fn is_windows_reparse_dir(_path: &Path, _metadata: &fs::Metadata) -> bool {
 
 fn is_linked_path(path: &Path, metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink() || is_windows_reparse_dir(path, metadata)
+}
+
+fn is_sensitive_sync_package_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name == ".env"
+        || name.starts_with(".env.")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+        || name.ends_with(".p12")
+        || name.ends_with(".pfx")
+        || name.contains("api_key")
+        || name.contains("apikey")
+        || name.contains("credential")
+        || name.contains("password")
+        || name.contains("private_key")
+        || name.contains("secret")
+        || name.contains("token")
 }
 
 fn is_sqlite_sidecar_file(path: &Path) -> bool {
@@ -2441,6 +2547,213 @@ fn remove_quota_config_from_doc(doc: &mut Document) {
     for key in QUOTA_CONFIG_KEYS {
         let _ = doc.remove(key);
     }
+    sanitize_inherited_config_doc(doc);
+}
+
+fn sanitize_inherited_config_doc(doc: &mut Document) {
+    sanitize_secret_config_item(doc.as_item_mut());
+    if let Some(mcp_servers) = doc.get_mut("mcp_servers") {
+        sanitize_mcp_servers_item(mcp_servers);
+    }
+    let remove_mcp_servers = doc
+        .get("mcp_servers")
+        .is_some_and(|item| toml_item_is_empty_table(item));
+    if remove_mcp_servers {
+        let _ = doc.remove("mcp_servers");
+    }
+}
+
+fn sanitize_secret_config_item(item: &mut toml_edit::Item) {
+    if let Some(table) = item.as_table_mut() {
+        let keys = table
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect::<Vec<_>>();
+        for key in keys {
+            if key == "mcp_servers" {
+                continue;
+            }
+            if is_secret_config_key(&key) {
+                let _ = table.remove(&key);
+                continue;
+            }
+            if let Some(child) = table.get_mut(&key) {
+                sanitize_secret_config_item(child);
+            }
+            let remove_child = table
+                .get(&key)
+                .is_some_and(|child| toml_item_is_empty_table(child));
+            if remove_child {
+                let _ = table.remove(&key);
+            }
+        }
+        return;
+    }
+
+    if let Some(array_of_tables) = item.as_array_of_tables_mut() {
+        for table in array_of_tables.iter_mut() {
+            let mut table_item = toml_edit::Item::Table(table.clone());
+            sanitize_secret_config_item(&mut table_item);
+            if let toml_edit::Item::Table(sanitized) = table_item {
+                *table = sanitized;
+            }
+        }
+    }
+}
+
+fn sanitize_mcp_servers_item(item: &mut toml_edit::Item) {
+    let Some(table) = item.as_table_mut() else {
+        return;
+    };
+
+    let server_names = table
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .collect::<Vec<_>>();
+    for server_name in server_names {
+        if let Some(server) = table.get_mut(&server_name) {
+            sanitize_mcp_server_item(server);
+        }
+        let remove_server = table
+            .get(&server_name)
+            .is_some_and(|server| toml_item_is_empty_table(server));
+        if remove_server {
+            let _ = table.remove(&server_name);
+        }
+    }
+}
+
+fn sanitize_mcp_server_item(item: &mut toml_edit::Item) {
+    let Some(table) = item.as_table_mut() else {
+        return;
+    };
+
+    let keys = table
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .collect::<Vec<_>>();
+    for key in keys {
+        if is_secret_config_key(&key) {
+            let _ = table.remove(&key);
+            continue;
+        }
+        match key.as_str() {
+            "args" => {
+                if let Some(args) = table.get_mut(&key) {
+                    sanitize_mcp_args_item(args);
+                }
+            }
+            "env" => {
+                if let Some(env) = table.get_mut(&key) {
+                    sanitize_env_item(env);
+                }
+                let remove_env = table
+                    .get(&key)
+                    .is_some_and(|env| toml_item_is_empty_table(env));
+                if remove_env {
+                    let _ = table.remove(&key);
+                }
+            }
+            _ => {
+                if let Some(child) = table.get_mut(&key) {
+                    sanitize_mcp_server_item(child);
+                }
+                let remove_child = table
+                    .get(&key)
+                    .is_some_and(|child| toml_item_is_empty_table(child));
+                if remove_child {
+                    let _ = table.remove(&key);
+                }
+            }
+        }
+    }
+}
+
+fn sanitize_env_item(item: &mut toml_edit::Item) {
+    let Some(table) = item.as_table_mut() else {
+        return;
+    };
+    let keys = table
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .collect::<Vec<_>>();
+    for key in keys {
+        if is_secret_config_key(&key) {
+            let _ = table.remove(&key);
+        }
+    }
+}
+
+fn sanitize_mcp_args_item(item: &mut toml_edit::Item) {
+    let Some(array) = item.as_array() else {
+        return;
+    };
+    let Some(args) = array
+        .iter()
+        .map(|value| value.as_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return;
+    };
+
+    let mut sanitized = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    let mut changed = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            changed = true;
+            continue;
+        }
+        if let Some((key, _)) = arg.split_once('=') {
+            if is_secret_arg_key(key) {
+                changed = true;
+                continue;
+            }
+        }
+        if is_secret_arg_key(&arg) {
+            skip_next = true;
+            changed = true;
+            continue;
+        }
+        sanitized.push(arg);
+    }
+
+    if !changed {
+        return;
+    }
+    let mut replacement = toml_edit::Array::default();
+    for arg in sanitized {
+        replacement.push(arg);
+    }
+    *item = toml_edit::value(replacement);
+}
+
+fn toml_item_is_empty_table(item: &toml_edit::Item) -> bool {
+    item.as_table().is_some_and(|table| table.is_empty())
+}
+
+fn normalize_secret_key(value: &str) -> String {
+    value
+        .trim_start_matches('-')
+        .to_ascii_lowercase()
+        .replace('-', "_")
+}
+
+fn is_secret_config_key(key: &str) -> bool {
+    let normalized = normalize_secret_key(key);
+    SECRET_CONFIG_KEY_FRAGMENTS
+        .iter()
+        .any(|fragment| normalized == *fragment || normalized.ends_with(&format!("_{}", fragment)))
+}
+
+fn is_secret_arg_key(key: &str) -> bool {
+    let normalized = key.trim_start_matches('-').to_ascii_lowercase();
+    SECRET_ARG_FRAGMENTS.iter().any(|fragment| {
+        normalized == *fragment
+            || normalized.ends_with(&format!("-{}", fragment))
+            || normalized.ends_with(&format!("_{}", fragment))
+    })
 }
 
 fn merge_toml_item(target: &mut toml_edit::Item, source: &toml_edit::Item) {
@@ -3210,6 +3523,47 @@ mod tests {
     }
 
     #[test]
+    fn package_apply_rejects_manifest_package_path_tampering() {
+        with_temp_paths(
+            "codex-sync-package-path-tamper-test",
+            |source_home, target_home, package_root| {
+                let source_skills = source_home.join("skills").join("safe");
+                fs::create_dir_all(&source_skills).expect("create safe skills");
+                fs::write(source_skills.join("SKILL.md"), "# Safe").expect("write safe skill");
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+
+                let outside_home = package_root.join("outside-codex-home");
+                let outside_skills = outside_home.join("skills").join("evil");
+                fs::create_dir_all(&outside_skills).expect("create outside skills");
+                fs::write(outside_skills.join("SKILL.md"), "# Evil").expect("write outside skill");
+
+                let manifest_path = manifest_path_for(package_root);
+                let mut manifest: CodexSyncPackageManifest = serde_json::from_str(
+                    &fs::read_to_string(&manifest_path).expect("read package manifest"),
+                )
+                .expect("parse package manifest");
+                manifest.package_path = outside_home.to_string_lossy().to_string();
+                fs::write(
+                    &manifest_path,
+                    serde_json::to_string_pretty(&manifest).expect("serialize manifest"),
+                )
+                .expect("write tampered manifest");
+
+                let error = apply_sync_package_to_home_from_source(
+                    package_root,
+                    target_home,
+                    Some(source_home),
+                )
+                .expect_err("tampered package path should be rejected");
+
+                assert!(error.contains("manifest path mismatch"));
+                assert!(!target_home.join("skills").join("evil").exists());
+                assert!(!target_home.join("skills").join("safe").exists());
+            },
+        );
+    }
+
+    #[test]
     fn package_apply_replaces_clone_memories_with_package_memories() {
         with_temp_paths(
             "codex-sync-package-memories-replace-test",
@@ -3256,14 +3610,27 @@ mod tests {
                     .expect("write auth");
                 fs::write(source_home.join(".credentials.json"), r#"{"secret":true}"#)
                     .expect("write credentials");
+                let mcp_secret_dir = source_home.join("mcp-servers").join("local");
+                fs::create_dir_all(&mcp_secret_dir).expect("create mcp dir");
+                fs::write(mcp_secret_dir.join("server.js"), "console.log('ok')")
+                    .expect("write mcp server");
+                fs::write(mcp_secret_dir.join(".env"), "OPENAI_API_KEY=sk-source")
+                    .expect("write mcp env");
+                fs::write(mcp_secret_dir.join("private.key"), "secret key").expect("write mcp key");
                 fs::write(
                     source_home.join("config.toml"),
                     r#"model = "source-model"
 model_provider = "source-provider"
 openai_base_url = "https://source.example.com/v1"
+api_key = "sk-source-top-level"
+refresh_token = "refresh-source-top-level"
 
 [features]
 web_search = true
+
+[custom_tool]
+command = "safe"
+bearer_token = "source-bearer-token"
 
 [model_providers.source-provider]
 base_url = "https://source.example.com/v1"
@@ -3303,6 +3670,30 @@ experimental_bearer_token = "sk-clone"
                     .expect("read package config");
                 assert!(!package_config.contains("source-provider"));
                 assert!(!package_config.contains("openai_base_url"));
+                assert!(package_config.contains("[features]"));
+                assert!(package_config.contains("[mcp_servers.safe]"));
+                assert!(package_config.contains("[mcp_servers.arg_secret]"));
+                assert!(!package_config.contains("OPENAI_API_KEY"));
+                assert!(!package_config.contains("sk-source"));
+                assert!(!package_config.contains("refresh-source-top-level"));
+                assert!(!package_config.contains("source-bearer-token"));
+                assert!(!package_config.contains("--api-key"));
+                assert!(!package_config.contains("[mcp_servers.secret.env]"));
+                assert!(package_home
+                    .join("mcp-servers")
+                    .join("local")
+                    .join("server.js")
+                    .exists());
+                assert!(!package_home
+                    .join("mcp-servers")
+                    .join("local")
+                    .join(".env")
+                    .exists());
+                assert!(!package_home
+                    .join("mcp-servers")
+                    .join("local")
+                    .join("private.key")
+                    .exists());
 
                 apply_sync_package_from(&package_home, target_home).expect("apply package");
                 assert!(!target_home.join("auth.json").exists());
@@ -3314,11 +3705,30 @@ experimental_bearer_token = "sk-clone"
                 assert!(content.contains("experimental_bearer_token"));
                 assert!(content.contains("[features]"));
                 assert!(content.contains("[mcp_servers.safe]"));
-                assert!(content.contains("OPENAI_API_KEY"));
                 assert!(content.contains("[mcp_servers.arg_secret]"));
-                assert!(content.contains("[mcp_servers.secret.env]"));
+                assert!(!content.contains("OPENAI_API_KEY"));
+                assert!(!content.contains("sk-source"));
+                assert!(!content.contains("refresh-source-top-level"));
+                assert!(!content.contains("source-bearer-token"));
+                assert!(!content.contains("--api-key"));
+                assert!(!content.contains("[mcp_servers.secret.env]"));
                 assert!(!content.contains("source-provider"));
                 assert!(!content.contains("openai_base_url"));
+                assert!(target_home
+                    .join("mcp-servers")
+                    .join("local")
+                    .join("server.js")
+                    .exists());
+                assert!(!target_home
+                    .join("mcp-servers")
+                    .join("local")
+                    .join(".env")
+                    .exists());
+                assert!(!target_home
+                    .join("mcp-servers")
+                    .join("local")
+                    .join("private.key")
+                    .exists());
             },
         );
     }
@@ -3479,6 +3889,89 @@ experimental_bearer_token = "sk-clone"
 
     #[cfg(windows)]
     #[test]
+    fn package_extract_rejects_linked_top_level_file_source() {
+        with_temp_paths(
+            "codex-sync-package-linked-top-level-file-test",
+            |source_home, _target_home, package_root| {
+                let linked_target = package_root.join("outside-agents-link-target");
+                fs::create_dir_all(&linked_target).expect("create linked target");
+                fs::write(linked_target.join("secret.txt"), "do-not-copy")
+                    .expect("write linked target file");
+                let linked_source = source_home.join("AGENTS.md");
+                let output = std::process::Command::new("cmd")
+                    .arg("/C")
+                    .arg("mklink")
+                    .arg("/J")
+                    .arg(&linked_source)
+                    .arg(&linked_target)
+                    .output()
+                    .expect("run mklink");
+                assert!(
+                    output.status.success(),
+                    "mklink failed: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+
+                let result =
+                    extract_sync_package_from(source_home, package_root).expect("extract package");
+
+                assert!(
+                    result
+                        .warnings
+                        .iter()
+                        .any(|warning| warning
+                            .contains("refuse to copy file from linked source path"))
+                );
+                assert!(!package_codex_home_dir_for(package_root)
+                    .join("AGENTS.md")
+                    .join("secret.txt")
+                    .exists());
+            },
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn package_apply_rejects_linked_source_directory() {
+        with_temp_paths(
+            "codex-sync-package-source-junction-test",
+            |_source_home, target_home, package_root| {
+                let package_home = package_codex_home_dir_for(package_root);
+                let linked_target = package_root.join("outside-linked-source");
+                fs::create_dir_all(&linked_target).expect("create linked target");
+                fs::write(linked_target.join("secret.txt"), "do-not-copy")
+                    .expect("write linked target file");
+                let linked_source = package_home.join("skills");
+                fs::create_dir_all(&package_home).expect("create package home");
+                let output = std::process::Command::new("cmd")
+                    .arg("/C")
+                    .arg("mklink")
+                    .arg("/J")
+                    .arg(&linked_source)
+                    .arg(&linked_target)
+                    .output()
+                    .expect("run mklink");
+                assert!(
+                    output.status.success(),
+                    "mklink failed: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+
+                let result = copy_directory_merge(&package_home, target_home);
+
+                assert!(result.is_err());
+                assert!(result
+                    .unwrap_err()
+                    .contains("refuse to copy linked source path"));
+                assert!(!target_home.join("skills").join("secret.txt").exists());
+            },
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn package_apply_replaces_windows_junction_with_real_directory() {
         with_temp_paths(
             "codex-sync-package-junction-test",
@@ -3516,6 +4009,57 @@ experimental_bearer_token = "sk-clone"
                 assert!(!is_linked_path(&junction, &after));
                 assert!(junction.join("define-goal").join("SKILL.md").exists());
                 assert!(old_target.exists());
+            },
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn package_apply_replaces_windows_junction_for_merge_directory() {
+        with_temp_paths(
+            "codex-sync-package-merge-junction-test",
+            |source_home, target_home, package_root| {
+                let session_dir = source_home.join("sessions").join("2026");
+                fs::create_dir_all(&session_dir).expect("create session dir");
+                fs::write(session_dir.join("rollout-source.jsonl"), "{}\n")
+                    .expect("write source session");
+
+                let linked_target = target_home.join("outside-sessions");
+                fs::create_dir_all(&linked_target).expect("create linked target");
+                fs::write(linked_target.join("old.txt"), "old").expect("write old target");
+                let junction = target_home.join("sessions");
+                let output = std::process::Command::new("cmd")
+                    .arg("/C")
+                    .arg("mklink")
+                    .arg("/J")
+                    .arg(&junction)
+                    .arg(&linked_target)
+                    .output()
+                    .expect("run mklink");
+                assert!(
+                    output.status.success(),
+                    "mklink failed: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let before = fs::symlink_metadata(&junction).expect("junction metadata");
+                assert!(is_linked_path(&junction, &before));
+
+                extract_sync_package_from(source_home, package_root).expect("extract package");
+                apply_sync_package_from(&package_codex_home_dir_for(package_root), target_home)
+                    .expect("apply package");
+
+                let after = fs::symlink_metadata(&junction).expect("sessions metadata");
+                assert!(!is_linked_path(&junction, &after));
+                assert!(junction.join("2026").join("rollout-source.jsonl").exists());
+                assert!(!linked_target
+                    .join("2026")
+                    .join("rollout-source.jsonl")
+                    .exists());
+                assert_eq!(
+                    fs::read_to_string(linked_target.join("old.txt")).expect("read old target"),
+                    "old"
+                );
             },
         );
     }

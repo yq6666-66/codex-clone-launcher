@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 const https = require('node:https');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const INSTALLER_EXTENSIONS = ['.exe', '.msi'];
 const PORTABLE_EXTENSIONS = ['.zip'];
@@ -33,73 +35,46 @@ function boolArg(value) {
   return value === true || ['true', '1', 'yes'].includes(String(value || '').toLowerCase());
 }
 
-function requestJson(url, token) {
-  return new Promise((resolve, reject) => {
-    const request = https.get(
-      url,
-      {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'codex-clone-launcher-updater-check',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      },
-      (response) => {
-        let body = '';
-        response.setEncoding('utf8');
-        response.on('data', (chunk) => {
-          body += chunk;
-        });
-        response.on('end', () => {
-          if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(`GET ${url} failed with ${response.statusCode}: ${body}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(body));
-          } catch (error) {
-            reject(new Error(`GET ${url} returned invalid JSON: ${error.message}`));
-          }
-        });
-      },
-    );
-    request.on('error', reject);
-    request.setTimeout(30000, () => {
-      request.destroy(new Error(`GET ${url} timed out`));
-    });
-  });
-}
+function requestBody(url, options = {}) {
+  const { accept = 'application/json', token, redirects = 5, originalHost } = options;
+  const requestUrl = new URL(url);
+  const firstHost = originalHost || requestUrl.hostname;
 
-function requestText(url, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const request = https.get(
-      url,
+      requestUrl,
       {
         headers: {
-          Accept: 'application/json',
+          Accept: accept,
           'User-Agent': 'codex-clone-launcher-updater-check',
+          ...(token && requestUrl.hostname === firstHost ? { Authorization: `Bearer ${token}` } : {}),
         },
       },
       (response) => {
-        if (
-          response.statusCode &&
-          response.statusCode >= 300 &&
-          response.statusCode < 400 &&
-          response.headers.location
-        ) {
-          if (redirectCount >= 5) {
-            reject(new Error(`GET ${url} exceeded redirect limit`));
-            return;
-          }
-          requestText(response.headers.location, redirectCount + 1).then(resolve, reject);
-          return;
-        }
         let body = '';
         response.setEncoding('utf8');
         response.on('data', (chunk) => {
           body += chunk;
         });
         response.on('end', () => {
+          if (
+            response.statusCode &&
+            [301, 302, 303, 307, 308].includes(response.statusCode) &&
+            response.headers.location
+          ) {
+            if (redirects <= 0) {
+              reject(new Error(`GET ${url} exceeded redirect limit`));
+              return;
+            }
+            const redirectUrl = new URL(response.headers.location, requestUrl).toString();
+            requestBody(redirectUrl, {
+              accept,
+              token,
+              redirects: redirects - 1,
+              originalHost: firstHost,
+            }).then(resolve, reject);
+            return;
+          }
           if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
             reject(new Error(`GET ${url} failed with ${response.statusCode}: ${body}`));
             return;
@@ -115,10 +90,44 @@ function requestText(url, redirectCount = 0) {
   });
 }
 
+async function requestJson(url, token) {
+  const body = await requestBody(url, {
+    accept: 'application/vnd.github+json',
+    token,
+  });
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    throw new Error(`GET ${url} returned invalid JSON: ${error.message}`);
+  }
+}
+
+function requestText(url) {
+  return requestBody(url, {
+    accept: 'application/json',
+  });
+}
+
 function requireAsset(assets, predicate, message) {
   const asset = assets.find(predicate);
   if (!asset) throw new Error(message);
   return asset;
+}
+
+function readJsonFile(filePath, label) {
+  try {
+    return JSON.parse(fs.readFileSync(path.resolve(filePath), 'utf8').replace(/^\uFEFF/, ''));
+  } catch (error) {
+    throw new Error(`${label} ${filePath} is not valid JSON: ${error.message}`);
+  }
+}
+
+function parseJsonText(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${label} is invalid JSON: ${error.message}`);
+  }
 }
 
 function formatList(values) {
@@ -138,6 +147,37 @@ function getPlatformEntries(latest) {
   }));
 }
 
+function platformFingerprint(platform) {
+  if (!platform) return '';
+  return JSON.stringify({
+    name: platform.name,
+    url: platform.value.url || '',
+    signature: platform.value.signature || '',
+  });
+}
+
+function validatePubDate(latest, release, diagnostics) {
+  if (!latest.pub_date) {
+    fail('latest.json is missing pub_date', diagnostics);
+  }
+  const latestDate = Date.parse(latest.pub_date);
+  if (Number.isNaN(latestDate)) {
+    fail(`latest.json pub_date is not a valid ISO date: ${latest.pub_date}`, diagnostics);
+  }
+  if (release.published_at) {
+    const releaseDate = Date.parse(release.published_at);
+    if (!Number.isNaN(releaseDate)) {
+      const driftMs = Math.abs(latestDate - releaseDate);
+      if (driftMs > 24 * 60 * 60 * 1000) {
+        fail(
+          `latest.json pub_date ${latest.pub_date} is more than 24h from release published_at ${release.published_at}`,
+          diagnostics,
+        );
+      }
+    }
+  }
+}
+
 function platformHasSignature(platform) {
   const signature = platform.value.signature;
   return typeof signature === 'string' && signature.trim().length > 0;
@@ -155,6 +195,28 @@ function getPlatformUrl(platform) {
 function getSignatureStatus(platform) {
   if (!platform) return 'missing platform';
   return platformHasSignature(platform) ? 'present' : 'missing';
+}
+
+function validateSignatureFormat(signature, assetName, version, diagnostics) {
+  const trimmed = String(signature || '').trim();
+  if (!trimmed) fail(`latest.json signature for ${assetName} is empty`, diagnostics);
+  if (!/^[A-Za-z0-9+/=\r\n]+$/.test(trimmed)) {
+    fail(`latest.json signature for ${assetName} is not base64 text`, diagnostics);
+  }
+  const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+  if (!decoded.includes('untrusted comment:') || !decoded.includes('trusted comment:')) {
+    fail(`latest.json signature for ${assetName} is not a minisign signature payload`, diagnostics);
+  }
+  const fileMatch = decoded.match(/\bfile:\s*([^\r\n]+)/i);
+  if (fileMatch) {
+    const signedFileName = fileMatch[1].trim().replace(/\s+hashed$/i, '');
+    if (!signedFileName.includes(version) || getAssetExtension(signedFileName) !== getAssetExtension(assetName)) {
+      fail(
+        `latest.json signature file comment ${signedFileName} does not match Windows asset version/type ${assetName}`,
+        diagnostics,
+      );
+    }
+  }
 }
 
 function isWindowsPlatform(platform) {
@@ -214,6 +276,16 @@ function getAssetExtension(nameOrUrl) {
   return match ? match[1] : '';
 }
 
+function getSignatureAssetName(assetName) {
+  return `${assetName}.sig`;
+}
+
+function requireNonEmptyAsset(asset, message) {
+  if (typeof asset.size === 'number' && asset.size <= 0) {
+    throw new Error(message);
+  }
+}
+
 function findAssetForUrl(assets, url, releaseInfo) {
   const normalizedUrl = normalizeAssetUrl(url);
   const exactAsset = assets.find((asset) => {
@@ -227,9 +299,65 @@ function findAssetForUrl(assets, url, releaseInfo) {
   const isSameRelease =
     githubAsset.owner === releaseInfo.owner &&
     githubAsset.repo === releaseInfo.repo &&
-    (githubAsset.tag === releaseInfo.tag || githubAsset.tag === 'latest');
+    githubAsset.tag === releaseInfo.tag;
   if (!isSameRelease) return undefined;
   return assets.find((asset) => asset.name === githubAsset.name);
+}
+
+function validateArtifactName(assetName, version, allowPortable, diagnostics) {
+  const escapedVersion = String(version || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const semvers = assetName.match(/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?/g) || [];
+  if (!escapedVersion || !new RegExp(`(^|[^0-9])${escapedVersion}([^0-9]|$)`).test(assetName)) {
+    fail(`Windows updater asset ${assetName} does not include latest.json version ${version}`, diagnostics);
+  }
+  if (semvers.length !== 1) {
+    fail(`Windows updater asset ${assetName} should contain exactly one semver, found ${semvers.length}`, diagnostics);
+  }
+  if (allowPortable && getAssetExtension(assetName) === '.zip') return;
+  if (!/(?:_x64-setup\.exe|\.msi)$/i.test(assetName)) {
+    fail(`Windows updater asset ${assetName} should be an x64 setup .exe or .msi`, diagnostics);
+  }
+}
+
+function validatePlatformAssetUrls(platforms, assets, releaseInfo, diagnostics) {
+  for (const platform of platforms) {
+    if (!platformHasUrl(platform)) {
+      fail(`latest.json platform ${platform.name} is missing a downloadable URL`, diagnostics);
+    }
+    const url = getPlatformUrl(platform);
+    const githubAsset = parseGithubReleaseAssetUrl(url);
+    if (!githubAsset) {
+      fail(`latest.json platform ${platform.name} URL is not a GitHub release asset URL: ${url}`, diagnostics);
+    }
+    const sameOwnerRepo =
+      githubAsset.owner.toLowerCase() === releaseInfo.owner.toLowerCase() &&
+      githubAsset.repo.toLowerCase() === releaseInfo.repo.toLowerCase();
+    const sameTag = githubAsset.tag === releaseInfo.tag || githubAsset.tag === 'latest';
+    if (!sameOwnerRepo || !sameTag) {
+      fail(
+        `latest.json platform ${platform.name} URL points outside ${releaseInfo.owner}/${releaseInfo.repo}@${releaseInfo.tag}: ${url}`,
+        diagnostics,
+      );
+    }
+    const asset = findAssetForUrl(assets, url, releaseInfo);
+    if (!asset) {
+      fail(`latest.json platform ${platform.name} URL does not match a release asset: ${url}`, diagnostics);
+    }
+    requireNonEmptyAsset(asset, `Release asset ${asset.name} for platform ${platform.name} is empty`);
+  }
+}
+
+function validateSignatureAsset(assets, packageAsset, diagnostics) {
+  const signatureAssetName = getSignatureAssetName(packageAsset.name);
+  const signatureAsset = assets.find((asset) => asset.name === signatureAssetName);
+  if (!signatureAsset) {
+    fail(
+      `Release asset ${packageAsset.name} is missing sibling updater signature asset ${signatureAssetName}`,
+      diagnostics,
+    );
+  }
+  requireNonEmptyAsset(signatureAsset, `Release signature asset ${signatureAssetName} is empty`);
+  return signatureAsset;
 }
 
 function isAllowedWindowsPackage(url, allowPortable) {
@@ -246,18 +374,35 @@ function getPackagePolicyMessage(allowPortable) {
   return 'Windows updater URL must point to a .exe or .msi release asset; portable .zip packages are not valid auto-update packages by default';
 }
 
-function buildDiagnostics({ release, assets, latest, platforms, windowsPlatform, allowPortable, latestUrl }) {
+function buildDiagnostics({
+  release,
+  assets,
+  latest,
+  platforms,
+  windowsPlatform,
+  allowPortable,
+  latestUrl,
+  skipLatestEndpoint,
+}) {
   const platformKeys = platforms.map((platform) => platform.name);
   const windowsUrl = windowsPlatform ? getPlatformUrl(windowsPlatform) : '';
   const windowsAssetName = windowsUrl ? getUrlAssetName(windowsUrl) || '(unparseable)' : '(missing)';
+  const windowsSigAssetName = windowsAssetName !== '(missing)' && windowsAssetName !== '(unparseable)'
+    ? getSignatureAssetName(windowsAssetName)
+    : '(missing)';
   return [
     `version/tag: latest.json=${latest && latest.version ? latest.version : '(missing)'}; release=${release && release.tag_name ? release.tag_name : '(missing)'}`,
     `asset names: ${formatList(assets.map((asset) => asset.name))}`,
     `platform keys: ${formatList(platformKeys)}`,
     `Windows platform: ${windowsPlatform ? windowsPlatform.name : '(missing)'}`,
     `Windows url asset: ${windowsAssetName}`,
+    `Windows signature asset: ${windowsSigAssetName}`,
     `Windows signature: ${getSignatureStatus(windowsPlatform)}`,
     `package policy: ${getPackagePolicyMessage(allowPortable)}`,
+    `release state: draft=${release && release.draft ? 'true' : 'false'}; prerelease=${
+      release && release.prerelease ? 'true' : 'false'
+    }`,
+    `latest endpoint check: ${skipLatestEndpoint ? 'skipped' : 'enabled'}`,
     `latest.json source: ${latestUrl}`,
   ];
 }
@@ -273,6 +418,8 @@ function fail(message, diagnostics) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const allowPortable = boolArg(args['allow-portable']);
+  const allowDraft = boolArg(args['allow-draft']);
+  const skipLatestEndpoint = boolArg(args['skip-latest-endpoint']);
   const ownerRepo = args['owner-repo'] || process.env.GITHUB_REPOSITORY || 'yq6666-66/codex-clone-launcher';
   const tag = args.tag || process.env.GITHUB_REF_NAME;
   const latestUrl =
@@ -284,8 +431,12 @@ async function main() {
   const releaseUrl = tag
     ? `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`
     : `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
-  const release = await requestJson(releaseUrl, token);
-  if (release.draft) throw new Error(`Release ${release.tag_name} is still a draft`);
+  const release = args['release-json']
+    ? readJsonFile(args['release-json'], '--release-json')
+    : await requestJson(releaseUrl, token);
+  if (release.draft && !allowDraft) {
+    throw new Error(`Release ${release.tag_name} is still a draft; pass --allow-draft only for pre-publish asset checks`);
+  }
   if (release.prerelease) throw new Error(`Release ${release.tag_name} is marked prerelease`);
 
   const assets = Array.isArray(release.assets) ? release.assets : [];
@@ -297,17 +448,18 @@ async function main() {
   );
 
   const latestJsonUrl = latestAsset.browser_download_url || latestUrl;
-  const latestText = await requestText(latestJsonUrl);
-  let latest;
-  try {
-    latest = JSON.parse(latestText);
-  } catch (error) {
-    throw new Error(`latest.json from ${latestJsonUrl} is invalid JSON: ${error.message}`);
-  }
+  const latest = args['latest-json']
+    ? readJsonFile(args['latest-json'], '--latest-json')
+    : parseJsonText(await requestText(latestJsonUrl), `latest.json from ${latestJsonUrl}`);
+  const endpointLatest =
+    !args['latest-json'] && !skipLatestEndpoint && latestUrl && latestUrl !== latestJsonUrl
+      ? parseJsonText(await requestText(latestUrl), `latest.json endpoint ${latestUrl}`)
+      : latest;
   const releaseVersion = normalizeVersion(release.tag_name);
   const latestVersion = normalizeVersion(latest.version);
   const platforms = getPlatformEntries(latest);
-  const windowsPlatform = platforms.find(isWindowsPlatform);
+  const windowsPlatforms = platforms.filter(isWindowsPlatform);
+  const windowsPlatform = windowsPlatforms[0];
   const diagnostics = buildDiagnostics({
     release,
     assets,
@@ -315,17 +467,36 @@ async function main() {
     platforms,
     windowsPlatform,
     allowPortable,
+    skipLatestEndpoint,
     latestUrl: latestJsonUrl,
   });
   if (releaseVersion && latestVersion && latestVersion !== releaseVersion) {
     fail(`latest.json version ${latest.version} does not match release ${release.tag_name}`, diagnostics);
   }
   if (!latest.version) fail('latest.json is missing version', diagnostics);
+  validatePubDate(latest, release, diagnostics);
   if (platforms.length === 0) {
     fail('latest.json is missing platforms', diagnostics);
   }
+  if (windowsPlatforms.length !== 1) {
+    fail(`latest.json should contain exactly one Windows platform entry, found ${windowsPlatforms.length}`, diagnostics);
+  }
   if (!windowsPlatform) {
     fail('latest.json is missing a Windows platform entry', diagnostics);
+  }
+  if (!skipLatestEndpoint) {
+    const endpointPlatforms = getPlatformEntries(endpointLatest);
+    const endpointWindowsPlatforms = endpointPlatforms.filter(isWindowsPlatform);
+    if (
+      normalizeVersion(endpointLatest.version) !== latestVersion ||
+      endpointWindowsPlatforms.length !== 1 ||
+      platformFingerprint(endpointWindowsPlatforms[0]) !== platformFingerprint(windowsPlatform)
+    ) {
+      fail(
+        `Configured latest endpoint ${latestUrl} does not match release asset latest.json for ${release.tag_name}`,
+        diagnostics,
+      );
+    }
   }
   if (!platformHasUrl(windowsPlatform)) {
     fail(`latest.json Windows platform ${windowsPlatform.name} is missing a downloadable URL`, diagnostics);
@@ -333,6 +504,7 @@ async function main() {
   if (!platformHasSignature(windowsPlatform)) {
     fail(`latest.json Windows platform ${windowsPlatform.name} is missing an updater signature`, diagnostics);
   }
+  validatePlatformAssetUrls(platforms, assets, { owner, repo, tag: release.tag_name }, diagnostics);
 
   const windowsUrl = getPlatformUrl(windowsPlatform);
   const windowsAsset = findAssetForUrl(assets, windowsUrl, { owner, repo, tag: release.tag_name });
@@ -355,6 +527,9 @@ async function main() {
       diagnostics,
     );
   }
+  validateArtifactName(windowsAsset.name, latest.version, allowPortable, diagnostics);
+  validateSignatureFormat(windowsPlatform.value.signature, windowsAsset.name, latest.version, diagnostics);
+  validateSignatureAsset(assets, windowsAsset, diagnostics);
 
   const portableNote = PORTABLE_EXTENSIONS.includes(getAssetExtension(windowsUrl))
     ? ' (portable allowed by --allow-portable)'

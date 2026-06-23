@@ -30,7 +30,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/48x48.png",

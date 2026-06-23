@@ -100,5 +100,8 @@ const tauriConfig = JSON.parse(read(tauriConfigPath));
 if (tauriConfig.build?.beforeBuildCommand !== 'node scripts/tauri-before-build.cjs') {
   fail('tauri.conf.json beforeBuildCommand must call scripts/tauri-before-build.cjs');
 }
+if (tauriConfig.bundle?.targets !== 'nsis') {
+  fail('tauri.conf.json bundle.targets must stay nsis for updater releases');
+}
 
 console.log('Release workflow hardening OK');

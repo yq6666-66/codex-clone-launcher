@@ -125,10 +125,26 @@ async function getReleaseByTag({ owner, repo, tag, token, allowDraft }) {
   return release;
 }
 
-function requestText(url) {
+function requestText(url, token = '') {
   return requestBody(url, {
     accept: 'application/json',
+    token,
   });
+}
+
+function getAssetApiUrl(asset) {
+  return asset.url || asset.api_url || asset.apiUrl || '';
+}
+
+function requestAssetText(asset, fallbackUrl, token) {
+  const apiUrl = getAssetApiUrl(asset);
+  if (apiUrl) {
+    return requestBody(apiUrl, {
+      accept: 'application/octet-stream',
+      token,
+    });
+  }
+  return requestText(fallbackUrl, token);
 }
 
 function requireAsset(assets, predicate, message) {
@@ -177,6 +193,21 @@ function platformFingerprint(platform) {
     url: platform.value.url || '',
     signature: platform.value.signature || '',
   });
+}
+
+function platformPayloadFingerprint(platform) {
+  if (!platform) return '';
+  return JSON.stringify({
+    url: platform.value.url || '',
+    signature: platform.value.signature || '',
+  });
+}
+
+function selectWindowsPlatform(windowsPlatforms) {
+  return (
+    windowsPlatforms.find((platform) => /^windows-[^-]+$/i.test(platform.name)) ||
+    windowsPlatforms[0]
+  );
 }
 
 function validatePubDate(latest, release, diagnostics) {
@@ -472,16 +503,19 @@ async function main() {
   const latestJsonUrl = latestAsset.browser_download_url || latestUrl;
   const latest = args['latest-json']
     ? readJsonFile(args['latest-json'], '--latest-json')
-    : parseJsonText(await requestText(latestJsonUrl), `latest.json from ${latestJsonUrl}`);
+    : parseJsonText(
+        await requestAssetText(latestAsset, latestJsonUrl, token),
+        `latest.json from ${latestJsonUrl}`,
+      );
   const endpointLatest =
     !args['latest-json'] && !skipLatestEndpoint && latestUrl && latestUrl !== latestJsonUrl
-      ? parseJsonText(await requestText(latestUrl), `latest.json endpoint ${latestUrl}`)
+      ? parseJsonText(await requestText(latestUrl, token), `latest.json endpoint ${latestUrl}`)
       : latest;
   const releaseVersion = normalizeVersion(release.tag_name);
   const latestVersion = normalizeVersion(latest.version);
   const platforms = getPlatformEntries(latest);
   const windowsPlatforms = platforms.filter(isWindowsPlatform);
-  const windowsPlatform = windowsPlatforms[0];
+  const windowsPlatform = selectWindowsPlatform(windowsPlatforms);
   const diagnostics = buildDiagnostics({
     release,
     assets,
@@ -500,19 +534,24 @@ async function main() {
   if (platforms.length === 0) {
     fail('latest.json is missing platforms', diagnostics);
   }
-  if (windowsPlatforms.length !== 1) {
-    fail(`latest.json should contain exactly one Windows platform entry, found ${windowsPlatforms.length}`, diagnostics);
-  }
   if (!windowsPlatform) {
     fail('latest.json is missing a Windows platform entry', diagnostics);
+  }
+  const distinctWindowsPayloads = new Set(windowsPlatforms.map(platformPayloadFingerprint));
+  if (distinctWindowsPayloads.size > 1) {
+    fail(
+      `latest.json Windows platform entries point to different updater payloads, found ${windowsPlatforms.length} entries`,
+      diagnostics,
+    );
   }
   if (!skipLatestEndpoint) {
     const endpointPlatforms = getPlatformEntries(endpointLatest);
     const endpointWindowsPlatforms = endpointPlatforms.filter(isWindowsPlatform);
+    const endpointWindowsPlatform = selectWindowsPlatform(endpointWindowsPlatforms);
     if (
       normalizeVersion(endpointLatest.version) !== latestVersion ||
-      endpointWindowsPlatforms.length !== 1 ||
-      platformFingerprint(endpointWindowsPlatforms[0]) !== platformFingerprint(windowsPlatform)
+      endpointWindowsPlatforms.length < 1 ||
+      platformPayloadFingerprint(endpointWindowsPlatform) !== platformPayloadFingerprint(windowsPlatform)
     ) {
       fail(
         `Configured latest endpoint ${latestUrl} does not match release asset latest.json for ${release.tag_name}`,

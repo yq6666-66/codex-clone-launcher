@@ -7,7 +7,7 @@ if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $ShortcutDir = Join-Path ([System.IO.Path]::GetTempPath()) ('codex-clone-shortcut-verify-' + [System.Guid]::NewGuid().ToString('N'))
-$ShortcutName = 'Codex ' + [string][char]0x5206 + [string][char]0x8eab + [string][char]0x542f + [string][char]0x52a8 + [string][char]0x5668 + '.lnk'
+$ShortcutName = 'Codex Clone Launcher.lnk'
 $ShortcutPath = Join-Path $ShortcutDir $ShortcutName
 $CreateScript = Join-Path $ProjectRoot 'scripts\create-windows-shortcut.ps1'
 $LauncherScript = Join-Path $ProjectRoot 'scripts\start-codex-clone-launcher.ps1'

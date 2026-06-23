@@ -23,4 +23,12 @@ jobs:
 
       - run: npm ci
       - run: npx playwright install chromium
-      - run: npm run verify
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test:rust
+      - run: npm run verify:ui-regression
+        timeout-minutes: 5
+      - run: npm run verify:ui-workflows
+        timeout-minutes: 5
+      - run: npm run verify:release-workflow
+      - run: npm run verify:windows-shortcut

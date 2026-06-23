@@ -83,6 +83,9 @@ if (!tauriBlock.includes('TAURI_SIGNING_PRIVATE_KEY:')) {
 if (!tauriBlock.includes('CODEX_SKIP_TAURI_BEFORE_BUILD: "1"')) {
   fail('tauri-action step must set CODEX_SKIP_TAURI_BEFORE_BUILD: "1"');
 }
+if (!tauriBlock.includes('assetNamePattern: "codex-clone-launcher_[version]_x64-setup[ext]"')) {
+  fail('tauri-action step must use a stable ASCII assetNamePattern for updater assets');
+}
 if (tauriBlock.includes('VITE_SENTRY_DSN:')) {
   fail('VITE_SENTRY_DSN belongs in the prebuild step, not the signing step');
 }

@@ -102,6 +102,29 @@ async function requestJson(url, token) {
   }
 }
 
+async function getReleaseByTag({ owner, repo, tag, token, allowDraft }) {
+  const encodedTag = encodeURIComponent(tag);
+  const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodedTag}`;
+  try {
+    return await requestJson(releaseUrl, token);
+  } catch (error) {
+    if (!allowDraft || !/failed with 404\b/.test(error.message)) {
+      throw error;
+    }
+  }
+
+  const releasesUrl = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100`;
+  const releases = await requestJson(releasesUrl, token);
+  if (!Array.isArray(releases)) {
+    throw new Error(`GET ${releasesUrl} returned non-array JSON`);
+  }
+  const release = releases.find((candidate) => candidate && candidate.tag_name === tag);
+  if (!release) {
+    throw new Error(`Release ${tag} was not found in published or draft releases`);
+  }
+  return release;
+}
+
 function requestText(url) {
   return requestBody(url, {
     accept: 'application/json',
@@ -428,12 +451,11 @@ async function main() {
   const [owner, repo] = ownerRepo.split('/');
   if (!owner || !repo) throw new Error(`Invalid owner/repo: ${ownerRepo}`);
 
-  const releaseUrl = tag
-    ? `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`
-    : `https://api.github.com/repos/${owner}/${repo}/releases/latest`;
   const release = args['release-json']
     ? readJsonFile(args['release-json'], '--release-json')
-    : await requestJson(releaseUrl, token);
+    : tag
+      ? await getReleaseByTag({ owner, repo, tag, token, allowDraft })
+      : await requestJson(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, token);
   if (release.draft && !allowDraft) {
     throw new Error(`Release ${release.tag_name} is still a draft; pass --allow-draft only for pre-publish asset checks`);
   }

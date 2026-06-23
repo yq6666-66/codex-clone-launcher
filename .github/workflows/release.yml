@@ -52,6 +52,7 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
+          assetNamePattern: "codex-clone-launcher_[version]_x64-setup[ext]"
 
       - name: Verify draft updater release assets
         run: node scripts/verify-updater-release.cjs --owner-repo "${{ github.repository }}" --tag "${{ github.ref_name }}" --allow-draft --skip-latest-endpoint

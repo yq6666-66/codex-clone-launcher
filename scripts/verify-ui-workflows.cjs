@@ -1,10 +1,12 @@
 const fs = require('node:fs');
 const http = require('node:http');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
-const PORT = Number(process.env.UI_WORKFLOW_PORT || 5178);
-const targetUrl = process.env.UI_WORKFLOW_URL || `http://127.0.0.1:${PORT}/`;
+const DEFAULT_PORT = Number(process.env.UI_WORKFLOW_PORT || 5178);
+const explicitTargetUrl = process.env.UI_WORKFLOW_URL || '';
+let targetUrl = explicitTargetUrl || `http://127.0.0.1:${DEFAULT_PORT}/`;
 const outDir =
   process.env.UI_WORKFLOW_OUT_DIR ||
   path.join(os.tmpdir(), 'codex-clone-ui-workflows', new Date().toISOString().replace(/[:.]/g, '-'));
@@ -35,6 +37,24 @@ async function waitForServer(url, timeoutMs) {
   return false;
 }
 
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => {
+      probe.close(() => resolve(true));
+    });
+    probe.listen(port, '127.0.0.1');
+  });
+}
+
+async function findAvailablePort(startPort) {
+  for (let port = startPort; port < startPort + 100; port += 1) {
+    if (await isPortAvailable(port)) return port;
+  }
+  throw new Error(`No available localhost port found from ${startPort} to ${startPort + 99}`);
+}
+
 async function closeViteServer(server) {
   if (!server) return;
   if (typeof server.close === 'function') {
@@ -49,17 +69,18 @@ async function closeViteServer(server) {
 }
 
 async function ensureServer() {
-  if (await waitForServer(targetUrl, 1500)) return null;
-  const url = new URL(targetUrl);
-  if (url.hostname !== '127.0.0.1' || Number(url.port) !== PORT) {
-    throw new Error(`No server is running at ${targetUrl}; auto-start only supports ${PORT}`);
+  if (explicitTargetUrl) {
+    if (await waitForServer(targetUrl, 1500)) return null;
+    throw new Error(`No server is running at ${targetUrl}`);
   }
+  const port = await findAvailablePort(DEFAULT_PORT);
+  targetUrl = `http://127.0.0.1:${port}/`;
   process.env.VITE_TAURI_E2E_MOCKS = '1';
   const { createServer } = await import('vite');
   const server = await createServer({
     server: {
       host: '127.0.0.1',
-      port: PORT,
+      port,
       strictPort: true,
     },
   });

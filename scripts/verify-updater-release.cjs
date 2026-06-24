@@ -35,6 +35,12 @@ function boolArg(value) {
   return value === true || ['true', '1', 'yes'].includes(String(value || '').toLowerCase());
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function requestBody(url, options = {}) {
   const { accept = 'application/json', token, redirects = 5, originalHost } = options;
   const requestUrl = new URL(url);
@@ -105,24 +111,36 @@ async function requestJson(url, token) {
 async function getReleaseByTag({ owner, repo, tag, token, allowDraft }) {
   const encodedTag = encodeURIComponent(tag);
   const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${encodedTag}`;
-  try {
-    return await requestJson(releaseUrl, token);
-  } catch (error) {
-    if (!allowDraft || !/failed with 404\b/.test(error.message)) {
-      throw error;
+  const attempts = allowDraft ? 8 : 1;
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await requestJson(releaseUrl, token);
+    } catch (error) {
+      if (!allowDraft || !/failed with 404\b/.test(error.message)) {
+        throw error;
+      }
+      lastError = error;
+    }
+
+    const releasesUrl = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100`;
+    const releases = await requestJson(releasesUrl, token);
+    if (!Array.isArray(releases)) {
+      throw new Error(`GET ${releasesUrl} returned non-array JSON`);
+    }
+    const release = releases.find((candidate) => candidate && candidate.tag_name === tag);
+    if (release) {
+      return release;
+    }
+    if (attempt < attempts) {
+      await sleep(2000);
     }
   }
 
-  const releasesUrl = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=100`;
-  const releases = await requestJson(releasesUrl, token);
-  if (!Array.isArray(releases)) {
-    throw new Error(`GET ${releasesUrl} returned non-array JSON`);
-  }
-  const release = releases.find((candidate) => candidate && candidate.tag_name === tag);
-  if (!release) {
-    throw new Error(`Release ${tag} was not found in published or draft releases`);
-  }
-  return release;
+  throw new Error(
+    `Release ${tag} was not found in published or draft releases after ${attempts} attempts: ${lastError.message}`,
+  );
 }
 
 function requestText(url, token = '') {

@@ -4928,23 +4928,28 @@ mod tests {
         home_dir: std::path::PathBuf,
         previous_home: Option<String>,
         previous_codex_home: Option<String>,
+        previous_data_dir: Option<String>,
     }
 
     impl TestEnvGuard {
         fn new(prefix: &str) -> Self {
             let home_dir = make_temp_dir(prefix);
             let codex_home = home_dir.join(".codex");
+            let data_dir = home_dir.join(".codex_clone_launcher");
             fs::create_dir_all(&codex_home).expect("create codex home");
 
             let previous_home = std::env::var("HOME").ok();
             let previous_codex_home = std::env::var("CODEX_HOME").ok();
+            let previous_data_dir = std::env::var("CODEX_CLONE_DATA_DIR").ok();
             std::env::set_var("HOME", &home_dir);
             std::env::set_var("CODEX_HOME", &codex_home);
+            std::env::set_var("CODEX_CLONE_DATA_DIR", &data_dir);
 
             Self {
                 home_dir,
                 previous_home,
                 previous_codex_home,
+                previous_data_dir,
             }
         }
 
@@ -4962,6 +4967,10 @@ mod tests {
             match self.previous_codex_home.as_ref() {
                 Some(value) => std::env::set_var("CODEX_HOME", value),
                 None => std::env::remove_var("CODEX_HOME"),
+            }
+            match self.previous_data_dir.as_ref() {
+                Some(value) => std::env::set_var("CODEX_CLONE_DATA_DIR", value),
+                None => std::env::remove_var("CODEX_CLONE_DATA_DIR"),
             }
             let _ = fs::remove_dir_all(&self.home_dir);
         }

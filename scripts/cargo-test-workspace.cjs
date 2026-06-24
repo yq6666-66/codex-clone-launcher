@@ -2,10 +2,15 @@
 
 const { spawnSync } = require('node:child_process');
 
+const env = {
+  ...process.env,
+  RUST_TEST_THREADS: process.env.RUST_TEST_THREADS || '1',
+};
+
 const result = spawnSync('cargo', ['test', '--workspace', '--lib', ...process.argv.slice(2)], {
   stdio: 'inherit',
   shell: process.platform === 'win32',
-  env: process.env,
+  env,
 });
 
 if (result.error) {

@@ -71,13 +71,16 @@ function Invoke-LoggedNpm {
   $stderrPath = [System.IO.Path]::GetTempFileName()
 
   try {
-    Push-Location -LiteralPath $ProjectRoot
-    try {
-      & $npmCommand.Source @Arguments > $stdoutPath 2> $stderrPath
-      $exitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }
-    } finally {
-      Pop-Location
-    }
+    $process = Start-Process `
+      -FilePath $npmCommand.Source `
+      -ArgumentList $Arguments `
+      -WorkingDirectory $ProjectRoot `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath `
+      -Wait `
+      -PassThru `
+      -NoNewWindow
+    $exitCode = $process.ExitCode
 
     if (Test-Path -LiteralPath $stdoutPath) {
       Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue | Add-Content -LiteralPath $LogPath

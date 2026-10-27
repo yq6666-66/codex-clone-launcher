@@ -6,10 +6,10 @@ Codex Clone Launcher is a small Tauri desktop app for creating isolated Codex De
 
 ## Project Status
 
-- Primary target: Windows desktop.
-- Release channel: GitHub Releases with Tauri updater metadata.
-- Source builds: supported through Node.js, Rust, and Tauri prerequisites.
-- Scope: Codex clone/profile/history workflows only.
+1. Primary target: Windows desktop.
+2. Release channel: GitHub Releases with Tauri updater metadata.
+3. Source builds: supported through Node.js, Rust, and Tauri prerequisites.
+4. Scope: Codex clone/profile/history workflows only.
 
 ## Interface Preview
 
@@ -17,21 +17,21 @@ Codex Clone Launcher is a small Tauri desktop app for creating isolated Codex De
 
 ## Features
 
-- Create, launch, stop, and delete Codex Desktop clones.
-- Keep each clone in an isolated `CODEX_HOME`.
-- Use separate official OpenAI/Codex accounts or third-party OpenAI-compatible API keys per clone.
-- Bridge Chat Completions-only providers such as Gemini/Claude-compatible gateways into the Responses wire protocol expected by Codex.
-- Launch Windows clones with an elevated sandbox configuration so the Codex app can continue after sandbox setup.
-- Manually extract a local Codex sync package before applying it to clones.
-- Copy only stable local artifacts such as `sessions`, `state_5.sqlite`, `session_index.jsonl`, `memories`, `skills`, `rules`, `AGENTS.md`, and `mcp-servers`.
-- Exclude runtime state such as `auth.json`, `.credentials.json`, `plugins`, `cache`, `log`, `.tmp`, and quota configuration.
-- Back up the previous sync package before replacing it.
-- Align inherited `threads.model_provider` and `threads.model` values to the clone's current `config.toml`.
-- Update session JSONL metadata and rebuild `session_index.jsonl` so inherited conversations appear in Codex Desktop.
-- Share local skills, MCP configuration, memories, and conversation indexes without copying account secrets.
-- Check clone health, model/provider alignment, sync-package freshness, and sandbox readiness from the dashboard.
-- Show history health, verification, sync, and repair status in the clone list.
-- Check signed GitHub Releases from inside the app and install updates through Tauri Updater.
+1. Create, launch, stop, and delete Codex Desktop clones.
+2. Keep each clone in an isolated `CODEX_HOME`.
+3. Use separate official OpenAI/Codex accounts or third-party OpenAI-compatible API keys per clone.
+4. Bridge Chat Completions-only providers such as Gemini/Claude-compatible gateways into the Responses wire protocol expected by Codex.
+5. Launch Windows clones with an elevated sandbox configuration so the Codex app can continue after sandbox setup.
+6. Manually extract a local Codex sync package before applying it to clones.
+7. Copy only stable local artifacts such as `sessions`, `state_5.sqlite`, `session_index.jsonl`, `memories`, `skills`, `rules`, `AGENTS.md`, and `mcp-servers`.
+8. Exclude runtime state such as `auth.json`, `.credentials.json`, `plugins`, `cache`, `log`, `.tmp`, and quota configuration.
+9. Back up the previous sync package before replacing it.
+10. Align inherited `threads.model_provider` and `threads.model` values to the clone's current `config.toml`.
+11. Update session JSONL metadata and rebuild `session_index.jsonl` so inherited conversations appear in Codex Desktop.
+12. Share local skills, MCP configuration, memories, and conversation indexes without copying account secrets.
+13. Check clone health, model/provider alignment, sync-package freshness, and sandbox readiness from the dashboard.
+14. Show history health, verification, sync, and repair status in the clone list.
+15. Check signed GitHub Releases from inside the app and install updates through Tauri Updater.
 
 ## App Workflow
 
@@ -48,9 +48,9 @@ The launcher follows a conservative safety model: visual configuration, explicit
 
 Prerequisites:
 
-- Node.js LTS with `npm`
-- Rust stable toolchain
-- Tauri system prerequisites for your OS
+1. Node.js LTS with `npm`
+2. Rust stable toolchain
+3. Tauri system prerequisites for your OS
 
 ```powershell
 git clone https://github.com/yq6666-66/codex-clone-launcher.git
@@ -126,30 +126,30 @@ This fails fast if the release is missing `latest.json`, a Windows platform URL,
 
 Optional production telemetry is disabled unless `VITE_SENTRY_DSN` is set. Configure these GitHub Actions secrets/variables only for public release builds that should report updater/UI errors:
 
-- `VITE_SENTRY_DSN`
-- `VITE_SENTRY_RELEASE`, or let the workflow set `codex-clone-launcher@${{ github.ref_name }}`
+1. `VITE_SENTRY_DSN`
+2. `VITE_SENTRY_RELEASE`, or let the workflow set `codex-clone-launcher@${{ github.ref_name }}`
 
 Telemetry is not required for development or forks. Do not include API keys, OAuth tokens, `auth.json`, `.credentials.json`, raw `sessions`, or SQLite profile data in public issues.
 
 ## Usage Notes
 
-- Open a new conversation inside a clone after syncing; continuing an old conversation can still use old session metadata from the source conversation.
-- During sync-package extraction, repair, skill/MCP loading, or history rebuild, the UI may pause briefly. Wait for the in-app processing notice to finish.
-- If Codex appears unresponsive during launch, wait for the system chooser dialog and select the app instead of closing it.
-- If history, skills, MCP, plugins, or memories do not appear, refresh/extract the source sync package first, then run **Sync/Repair** on the clone.
+1. Open a new conversation inside a clone after syncing; continuing an old conversation can still use old session metadata from the source conversation.
+2. During sync-package extraction, repair, skill/MCP loading, or history rebuild, the UI may pause briefly. Wait for the in-app processing notice to finish.
+3. If Codex appears unresponsive during launch, wait for the system chooser dialog and select the app instead of closing it.
+4. If history, skills, MCP, plugins, or memories do not appear, refresh/extract the source sync package first, then run **Sync/Repair** on the clone.
 
 ## Privacy Boundary
 
 This repository is source code only. Do not commit local runtime data, including:
 
-- `auth.json`
-- `config.toml`
-- `state_5.sqlite`
-- `sessions/`
-- `memories/`
-- API keys, OAuth tokens, refresh tokens, or copied account data
-- `plugins/`, `cache/`, `log/`, or `.tmp/`
-- history sync backups or manifests from a real profile
+1. `auth.json`
+2. `config.toml`
+3. `state_5.sqlite`
+4. `sessions/`
+5. `memories/`
+6. API keys, OAuth tokens, refresh tokens, or copied account data
+7. `plugins/`, `cache/`, `log/`, or `.tmp/`
+8. history sync backups or manifests from a real profile
 
 The history sync logic is designed to copy conversation and index artifacts without copying source authentication secrets.
 
@@ -180,11 +180,11 @@ Create a shortcut somewhere else:
 
 ## Repository Map
 
-- `src`: React frontend.
-- `src-tauri`: Tauri desktop shell and Rust commands.
-- `scripts`: local build, version sync, release verification, and Windows shortcut helpers.
-- `docs`: product and operations notes.
-- `.github/workflows`: CI and release automation.
+1. `src`: React frontend.
+2. `src-tauri`: Tauri desktop shell and Rust commands.
+3. `scripts`: local build, version sync, release verification, and Windows shortcut helpers.
+4. `docs`: product and operations notes.
+5. `.github/workflows`: CI and release automation.
 
 See [docs/codex-clone-launcher.md](docs/codex-clone-launcher.md) for the detailed product and data-boundary guide.
 

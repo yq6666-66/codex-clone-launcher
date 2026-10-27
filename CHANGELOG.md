@@ -16,6 +16,10 @@ and `latest.json` metadata to match.
 - Reworked open-source documentation for source checkout deployment,
   contribution rules, and security reporting.
 
+### Changed
+
+Root `README.md` and `README.zh-CN.md` convert reader-facing unordered lists to ordered lists. Code blocks and tables are unchanged. Documentation only; no functional change.
+
 ## 0.24.7
 
 - Initial Codex Clone Launcher open-source baseline.

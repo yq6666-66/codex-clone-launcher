@@ -6,10 +6,10 @@ Codex 分身启动器是一个小型 Tauri 桌面应用，用于创建相互隔�
 
 ## 项目状态
 
-- 主要目标平台：Windows 桌面端。
-- 发布通道：GitHub Releases，包含 Tauri updater 元数据。
-- 源码构建：支持通过 Node.js、Rust 和 Tauri 前置环境构建。
-- 范围：仅聚焦 Codex 分身、配置档案、历史记录和同步修复流程。
+1. 主要目标平台：Windows 桌面端。
+2. 发布通道：GitHub Releases，包含 Tauri updater 元数据。
+3. 源码构建：支持通过 Node.js、Rust 和 Tauri 前置环境构建。
+4. 范围：仅聚焦 Codex 分身、配置档案、历史记录和同步修复流程。
 
 ## 界面预览
 
@@ -17,21 +17,21 @@ Codex 分身启动器是一个小型 Tauri 桌面应用，用于创建相互隔�
 
 ## 功能
 
-- 创建、启动、停止和删除 Codex Desktop 分身。
-- 每个分身使用独立的 `CODEX_HOME`。
-- 每个分身可使用独立的官方 OpenAI/Codex 账号或第三方 OpenAI-compatible API Key。
-- 将 Gemini/Claude 兼容网关这类仅支持 Chat Completions 的供应商桥接成 Codex 需要的 Responses wire protocol。
-- Windows 分身默认使用 elevated sandbox 配置，避免 Codex 在沙盒初始化后无法继续。
-- 在应用到分身之前，手动提取本地 Codex 同步包。
-- 只复制稳定本地资源，例如 `sessions`、`state_5.sqlite`、`session_index.jsonl`、`memories`、`skills`、`rules`、`AGENTS.md` 和 `mcp-servers`。
-- 排除运行态数据，例如 `auth.json`、`.credentials.json`、`plugins`、`cache`、`log`、`.tmp` 和额度配置。
-- 替换同步包前自动备份旧包。
-- 将继承的 `threads.model_provider` 和 `threads.model` 对齐到分身当前 `config.toml`。
-- 更新 session JSONL 元数据并重建 `session_index.jsonl`，让继承会话能出现在 Codex Desktop 中。
-- 可同步本地 skills、MCP 配置、memories 和会话索引，但不复制账号密钥。
-- 在控制台集中查看分身健康、模型/供应商对齐、同步包新鲜度和沙盒状态。
-- 在分身列表中展示历史健康、校验、同步和修复状态。
-- 在应用内检查已签名的 GitHub Releases，并通过 Tauri Updater 安装新版本。
+1. 创建、启动、停止和删除 Codex Desktop 分身。
+2. 每个分身使用独立的 `CODEX_HOME`。
+3. 每个分身可使用独立的官方 OpenAI/Codex 账号或第三方 OpenAI-compatible API Key。
+4. 将 Gemini/Claude 兼容网关这类仅支持 Chat Completions 的供应商桥接成 Codex 需要的 Responses wire protocol。
+5. Windows 分身默认使用 elevated sandbox 配置，避免 Codex 在沙盒初始化后无法继续。
+6. 在应用到分身之前，手动提取本地 Codex 同步包。
+7. 只复制稳定本地资源，例如 `sessions`、`state_5.sqlite`、`session_index.jsonl`、`memories`、`skills`、`rules`、`AGENTS.md` 和 `mcp-servers`。
+8. 排除运行态数据，例如 `auth.json`、`.credentials.json`、`plugins`、`cache`、`log`、`.tmp` 和额度配置。
+9. 替换同步包前自动备份旧包。
+10. 将继承的 `threads.model_provider` 和 `threads.model` 对齐到分身当前 `config.toml`。
+11. 更新 session JSONL 元数据并重建 `session_index.jsonl`，让继承会话能出现在 Codex Desktop 中。
+12. 可同步本地 skills、MCP 配置、memories 和会话索引，但不复制账号密钥。
+13. 在控制台集中查看分身健康、模型/供应商对齐、同步包新鲜度和沙盒状态。
+14. 在分身列表中展示历史健康、校验、同步和修复状态。
+15. 在应用内检查已签名的 GitHub Releases，并通过 Tauri Updater 安装新版本。
 
 ## 使用流程
 
@@ -48,9 +48,9 @@ Codex 分身启动器是一个小型 Tauri 桌面应用，用于创建相互隔�
 
 前置要求：
 
-- Node.js LTS 和 `npm`
-- Rust stable toolchain
-- 目标系统对应的 Tauri 前置环境
+1. Node.js LTS 和 `npm`
+2. Rust stable toolchain
+3. 目标系统对应的 Tauri 前置环境
 
 ```powershell
 git clone https://github.com/yq6666-66/codex-clone-launcher.git
@@ -117,30 +117,30 @@ npm run verify:updater-release -- --owner-repo your-name/codex-clone-launcher --
 
 可选生产遥测默认关闭，只有设置 `VITE_SENTRY_DSN` 时才启用。仅在公开发布版本需要上报 updater/UI 错误时配置这些 GitHub Actions secrets/variables：
 
-- `VITE_SENTRY_DSN`
-- `VITE_SENTRY_RELEASE`，或让 workflow 自动设置为 `codex-clone-launcher@${{ github.ref_name }}`
+1. `VITE_SENTRY_DSN`
+2. `VITE_SENTRY_RELEASE`，或让 workflow 自动设置为 `codex-clone-launcher@${{ github.ref_name }}`
 
 开发环境和 fork 不需要遥测。不要在公开 issue 中提交 API keys、OAuth tokens、`auth.json`、`.credentials.json`、原始 `sessions` 或 SQLite 配置档案数据。
 
 ## 使用注意
 
-- 同步后请在分身里开启新对话；继续旧对话仍可能使用源会话的旧 metadata。
-- 在提取同步包、修复、加载 skill/MCP 或重建历史索引时，界面可能短暂停顿，请等待应用内处理提示结束。
-- 如果 Codex 启动时看起来没有响应，等待系统选择器弹窗并选择应用，不要直接关闭。
-- 如果历史、skills、MCP、plugins 或 memories 没出现，先刷新/提取本体同步包，再对分身执行 **同步/修复**。
+1. 同步后请在分身里开启新对话；继续旧对话仍可能使用源会话的旧 metadata。
+2. 在提取同步包、修复、加载 skill/MCP 或重建历史索引时，界面可能短暂停顿，请等待应用内处理提示结束。
+3. 如果 Codex 启动时看起来没有响应，等待系统选择器弹窗并选择应用，不要直接关闭。
+4. 如果历史、skills、MCP、plugins 或 memories 没出现，先刷新/提取本体同步包，再对分身执行 **同步/修复**。
 
 ## 隐私边界
 
 本仓库只包含源码。不要提交本地运行数据，包括：
 
-- `auth.json`
-- `config.toml`
-- `state_5.sqlite`
-- `sessions/`
-- `memories/`
-- API keys、OAuth tokens、refresh tokens 或复制的账号数据
-- `plugins/`、`cache/`、`log/` 或 `.tmp/`
-- 真实 profile 产生的历史同步备份或 manifest
+1. `auth.json`
+2. `config.toml`
+3. `state_5.sqlite`
+4. `sessions/`
+5. `memories/`
+6. API keys、OAuth tokens、refresh tokens 或复制的账号数据
+7. `plugins/`、`cache/`、`log/` 或 `.tmp/`
+8. 真实 profile 产生的历史同步备份或 manifest
 
 历史同步逻辑的目标是复制会话和索引资源，不复制源 profile 的认证密钥。
 
@@ -171,11 +171,11 @@ npm run tauri -- build
 
 ## 仓库结构
 
-- `src`：React 前端。
-- `src-tauri`：Tauri 桌面壳和 Rust commands。
-- `scripts`：本地构建、版本同步、release 校验和 Windows 快捷方式辅助脚本。
-- `docs`：产品和运维说明。
-- `.github/workflows`：CI 和 release 自动化。
+1. `src`：React 前端。
+2. `src-tauri`：Tauri 桌面壳和 Rust commands。
+3. `scripts`：本地构建、版本同步、release 校验和 Windows 快捷方式辅助脚本。
+4. `docs`：产品和运维说明。
+5. `.github/workflows`：CI 和 release 自动化。
 
 详细产品和数据边界说明见 [docs/codex-clone-launcher.md](docs/codex-clone-launcher.md)。
 

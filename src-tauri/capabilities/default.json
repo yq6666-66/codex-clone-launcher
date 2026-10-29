@@ -19,10 +19,9 @@
         }
       ]
     },
-    "dialog:default",
-    "fs:default",
-    "notification:default",
-    "updater:default",
-    "process:default"
+    "dialog:allow-open",
+    "updater:allow-check",
+    "updater:allow-download-and-install",
+    "process:allow-restart"
   ]
 }

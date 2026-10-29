@@ -6,27 +6,37 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   publish-windows:
     runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write
+    defaults:
+      run:
+        # bash on windows-latest so "$TAG" expands the env var (pwsh would need $env:TAG)
+        shell: bash
+    env:
+      TAG: ${{ github.ref_name }}
+      OWNER_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (pinned commit)
 
       - run: npm ci
 
       - name: Validate tag matches package version
-        run: node scripts/validate-release-version.cjs --tag "${{ github.ref_name }}" --owner-repo "${{ github.repository }}" --require-newer-than-latest
+        run: node scripts/validate-release-version.cjs --tag "$TAG" --owner-repo "$OWNER_REPO" --require-newer-than-latest
 
       - name: Validate release workflow hardening
         run: npm run verify:release-workflow
@@ -37,7 +47,7 @@ jobs:
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           VITE_SENTRY_RELEASE: codex-clone-launcher@${{ github.ref_name }}
 
-      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPDATER_OWNER_REPO: ${{ github.repository }}
@@ -55,16 +65,16 @@ jobs:
           assetNamePattern: "codex-clone-launcher_[version]_x64-setup[ext]"
 
       - name: Verify draft updater release assets
-        run: node scripts/verify-updater-release.cjs --owner-repo "${{ github.repository }}" --tag "${{ github.ref_name }}" --allow-draft --skip-latest-endpoint
+        run: node scripts/verify-updater-release.cjs --owner-repo "$OWNER_REPO" --tag "$TAG" --allow-draft --skip-latest-endpoint
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish verified release
-        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --latest
+        run: gh release edit "$TAG" --repo "$OWNER_REPO" --draft=false --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify published latest updater endpoint
-        run: node scripts/verify-updater-release.cjs --owner-repo "${{ github.repository }}" --tag "${{ github.ref_name }}" --latest-url "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+        run: node scripts/verify-updater-release.cjs --owner-repo "$OWNER_REPO" --tag "$TAG" --latest-url "https://github.com/$OWNER_REPO/releases/latest/download/latest.json"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
